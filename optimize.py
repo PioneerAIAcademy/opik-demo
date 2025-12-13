@@ -445,8 +445,8 @@ initial_prompt = ChatPrompt(
             "content": prompt_template  # The template with {question}, {ai_answer}, etc.
         }
     ],
-    model=args.model,          # Use user's model for prompt evaluation
-    model_kwargs=model_params  # Pass Responses API parameters to prompt
+    model=args.model,               # Use user's model for prompt evaluation
+    model_parameters=model_params   # Pass Responses API parameters to prompt
 )
 
 print("✅ Created initial ChatPrompt")
