@@ -1,0 +1,888 @@
+# %% [markdown]
+"""
+# Grading Rubric Prompt Optimization Workshop
+
+Welcome! This notebook teaches you how to optimize prompts using Opik's agent optimizer.
+
+**What you'll learn:**
+1. How to set up Opik for optimization
+2. How to load and prepare evaluation datasets with stratification
+3. How to create custom metrics for scoring
+4. How to run baseline evaluations
+5. How to use three different optimizers
+6. How to compare and analyze results
+
+**Prerequisites:**
+- Python 3.8+
+- OpenAI API key
+- Comet API key (free at comet.com)
+- Basic understanding of prompt engineering
+
+**Estimated time:** 45-90 minutes (most time is spent waiting for optimizations to run)
+"""
+
+# %% Configuration
+"""
+CONFIGURATION - Default values (can be overridden via CLI arguments)
+"""
+
+# Default configuration values
+DEFAULT_SAMPLE_SIZE = None  # None = use full dataset (~153 rows → 102 train, 51 test)
+DEFAULT_N_TRIALS = 3        # Number of optimization rounds per optimizer
+DEFAULT_N_THREADS = 8       # Parallel threads for evaluation
+DEFAULT_MODEL = "openai/gpt-5-mini"  # LLM model in LiteLLM format
+
+# ⚠️  COST & TIME WARNING:
+# - Full dataset (153 samples): ~4,500 API calls, 45-90 minutes, ~$20-50
+# - Small test (15 samples): ~150 API calls, 5-10 minutes, ~$1-2
+# 💡 Recommendation: Start with --sample-size 15 to verify everything works!
+
+MODEL_PARAMS = {
+    "reasoning": {"effort": "low"},      # Faster reasoning
+    "text": {"verbosity": "low"},        # Concise outputs
+    "max_output_tokens": 65536           # Large token limit
+}
+
+# %% Setup and imports
+import os
+from dotenv import load_dotenv
+import pandas as pd
+from typing import Any
+import time
+import argparse
+import sys
+import json
+
+# Import Opik and optimizer
+import opik
+from opik import Opik
+from opik.evaluation.metrics import BaseMetric, score_result
+from opik_optimizer import (
+    MetaPromptOptimizer,
+    HierarchicalReflectiveOptimizer,
+    FewShotBayesianOptimizer,
+    ChatPrompt
+)
+
+# Import our custom utilities
+from utils import (
+    extract_score_from_text,
+    load_csv_with_stratified_split,
+    load_text_template,
+    create_timestamped_run_dir
+)
+
+# Load environment variables from .env file
+load_dotenv()
+
+# %% Parse command-line arguments
+def parse_args():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description='Grading Rubric Prompt Optimization',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument('--sample-size', type=int, default=DEFAULT_SAMPLE_SIZE,
+                       help='Number of samples (None = full dataset ~153)')
+    parser.add_argument('--n-trials', type=int, default=DEFAULT_N_TRIALS,
+                       help='Optimization trials per optimizer')
+    parser.add_argument('--n-threads', type=int, default=DEFAULT_N_THREADS,
+                       help='Parallel threads for evaluation')
+    parser.add_argument('--model', type=str, default=DEFAULT_MODEL,
+                       help='LLM model (LiteLLM format)')
+    parser.add_argument('--optimizers', type=str, default='all',
+                       help='Comma-separated: metaprompt,hierarchical,fewshot (default: all)')
+    parser.add_argument('--output-dir', type=str, default='runs',
+                       help='Base directory for outputs')
+    parser.add_argument('--quiet', action='store_true',
+                       help='Suppress verbose output')
+    return parser.parse_args()
+
+# Parse arguments
+args = parse_args()
+
+# Print configuration
+if not args.quiet:
+    print("=" * 80)
+    print("CONFIGURATION")
+    print("=" * 80)
+    print(f"Sample size: {args.sample_size if args.sample_size else 'Full dataset (~153 rows)'}")
+    print(f"Optimization trials: {args.n_trials}")
+    print(f"Parallel threads: {args.n_threads}")
+    print(f"Model: {args.model}")
+    print(f"Model parameters: {MODEL_PARAMS}")
+    print(f"Optimizers: {args.optimizers}")
+    print("=" * 80)
+
+    if args.sample_size is None:
+        print("\n⚠️  WARNING: Using full dataset!")
+        print("   This will make ~4,500 API calls and may cost $20-50.")
+        print("   Consider using --sample-size 15 for initial testing.")
+        print("=" * 80)
+
+# Verify API keys are present
+assert os.getenv("COMET_API_KEY"), "❌ COMET_API_KEY not found in .env file"
+
+# Check for appropriate API key based on model provider
+if args.model.startswith("openai/"):
+    assert os.getenv("OPENAI_API_KEY"), "❌ OPENAI_API_KEY not found in .env file (required for OpenAI models)"
+elif args.model.startswith("gemini/"):
+    assert os.getenv("GEMINI_API_KEY"), "❌ GEMINI_API_KEY not found in .env file (required for Gemini models)"
+else:
+    print(f"⚠️  Warning: Unknown model provider '{args.model.split('/')[0]}' - make sure appropriate API key is set")
+
+if not args.quiet:
+    print("\n✅ API keys loaded successfully")
+
+# %% [markdown]
+"""
+## Configure Opik
+
+Opik handles tracking and visualization of your optimization runs.
+If this is your first time, you'll be prompted to enter your Comet API key.
+"""
+
+# %% Configure Opik
+opik.configure()
+print("✅ Opik configured")
+
+# %% [markdown]
+"""
+## Create Output Directory
+
+We create a timestamped directory for this run's outputs.
+This prevents overwriting previous results and keeps everything organized.
+"""
+
+# %% Create output directory
+RUN_DIR = create_timestamped_run_dir(base_dir=args.output_dir)
+if not args.quiet:
+    print(f"   All outputs will be saved to: {RUN_DIR}/")
+
+# %% [markdown]
+"""
+## Load the Dataset
+
+We have ~153 evaluation examples with human scores (1-5) for AI-generated answers.
+
+**Why stratified split?**
+- Maintains the score distribution in both train and test sets
+- Ensures we don't accidentally get all 5s in train and all 1s in test
+- More reliable evaluation results
+
+We'll use a dynamic 2/3:1/3 split based on the sample size.
+"""
+
+# %% Load and split dataset
+train_df, test_df = load_csv_with_stratified_split(
+    csv_path="answer-evaluation.csv",
+    sample_size=args.sample_size,
+    stratify_column="score",
+    random_state=42
+)
+
+# %% [markdown]
+"""
+## Create Opik Datasets
+
+Opik datasets let us version and track our evaluation data.
+We create separate train and test datasets.
+"""
+
+# %% Create Opik datasets
+# Initialize Opik client with a project name
+opik_client = Opik(project_name="grading-rubric-optimization")
+print(f"✅ Connected to Opik project: grading-rubric-optimization")
+
+
+def create_opik_dataset(name: str, df: pd.DataFrame):
+    """
+    Create an Opik dataset from a pandas DataFrame.
+
+    This maps our CSV columns to Opik dataset fields.
+    The 'score' column becomes 'expected_output' for our metric to use.
+    """
+    print(f"\n📦 Getting or creating Opik dataset '{name}'...")
+
+    # Use idempotent get_or_create pattern (recommended by Opik)
+    # This safely handles existing datasets without errors
+    dataset = opik_client.get_or_create_dataset(
+        name=name,
+        description=f"Grading evaluation dataset - {name}"
+    )
+
+    # Insert data with column mapping
+    # Opik will map dataset fields to template variables by name!
+    dataset.insert_from_pandas(
+        dataframe=df,
+        keys_mapping={
+            "question": "question",           # Maps to {question} in template
+            "human_answer": "human_answer",   # Maps to {human_answer} in template
+            "ai_answer": "ai_answer",         # Maps to {ai_answer} in template
+            "retrieved_content": "retrieved_content",  # Maps to {retrieved_content}
+            "score": "expected_output"        # Used by our metric for comparison
+        }
+    )
+
+    print(f"   ✅ Dataset created with {len(df)} items")
+    return dataset
+
+
+# Create both datasets
+train_dataset = create_opik_dataset("grading-train-dataset", train_df)
+test_dataset = create_opik_dataset("grading-test-dataset", test_df)
+
+# %% [markdown]
+"""
+## Load the Prompt Template
+
+Our grading rubric prompt is stored in a separate text file for easy editing.
+It uses Python format strings like {question}, {ai_answer}, etc.
+
+**How Opik fills the template:**
+Opik automatically maps dataset fields to template variables by name:
+- dataset_item["question"] → {question}
+- dataset_item["ai_answer"] → {ai_answer}
+- And so on...
+"""
+
+# %% Load prompt template
+prompt_template = load_text_template("grading-rubric-prompt.txt")
+
+print(f"\n📄 Template preview (first 300 chars):")
+print("-" * 80)
+print(prompt_template[:300] + "...")
+print("-" * 80)
+
+# %% [markdown]
+"""
+## Create the Custom Metric
+
+Our metric compares LLM-generated scores (1-5) to human scores.
+
+**How it works:**
+1. The LLM evaluates an answer using our prompt
+2. The LLM's response contains "**Score:** X"
+3. We extract that score
+4. We compare it to the human score from the dataset
+5. We return an accuracy value (0.0 to 1.0)
+
+**Accuracy formula:**
+- Perfect match (LLM=4, Human=4) → 1.0
+- Off by 0.2 (LLM=4, Human=4.2) → 0.96
+- Off by 1 (LLM=4, Human=5) → 0.8
+- Off by 2 (LLM=3, Human=5) → 0.6
+- Failed to extract score → 0.0
+
+**Important:** This metric does NOT call the LLM - it just evaluates the LLM's output!
+"""
+
+# %% Define custom metric class
+
+
+class ScoreAccuracyMetric(BaseMetric):
+    """
+    Custom metric that measures score prediction accuracy.
+
+    Inherits from Opik's BaseMetric to integrate with the optimizer.
+    """
+
+    def __init__(self, name: str = "score_accuracy"):
+        """Initialize the metric with a name."""
+        super().__init__(name=name)
+
+    def score(
+        self,
+        output: str,
+        expected_output: str,
+        **ignored_kwargs: Any
+    ) -> score_result.ScoreResult:
+        """
+        Score the LLM output by comparing extracted score to expected score.
+
+        Args:
+            output: The LLM's full response (contains the score)
+            expected_output: The expected score from the dataset
+            **ignored_kwargs: Other dataset fields (we don't need them)
+
+        Returns:
+            ScoreResult with accuracy value between 0.0 and 1.0
+        """
+        # Extract the score from LLM output
+        llm_score = extract_score_from_text(output, min_score=1.0, max_score=5.0)
+
+        if llm_score is None:
+            # Failed to extract score - return 0
+            return score_result.ScoreResult(
+                value=0.0,
+                name=self.name,
+                reason="Could not extract score from LLM response"
+            )
+
+        # Parse expected score
+        try:
+            human_score = float(expected_output)
+            if not (1.0 <= human_score <= 5.0):
+                return score_result.ScoreResult(
+                    value=0.0,
+                    name=self.name,
+                    reason=f"Invalid expected score: {expected_output}"
+                )
+        except (ValueError, TypeError):
+            return score_result.ScoreResult(
+                value=0.0,
+                name=self.name,
+                reason=f"Could not parse expected score: {expected_output}"
+            )
+
+        # Calculate accuracy: 1 - (difference / 4)
+        # This gives us a value between 0.0 and 1.0
+        # Max difference is 4 (1.0 to 5.0), so we normalize by 4
+        difference = abs(llm_score - human_score)
+        accuracy = max(0.0, 1.0 - (difference / 4.0))
+
+        return score_result.ScoreResult(
+            value=accuracy,
+            name=self.name,
+            reason=f"LLM score: {llm_score}, Human score: {human_score}, Diff: {difference:.2f}"
+        )
+
+
+# Create metric instance
+metric = ScoreAccuracyMetric(name="score_accuracy")
+print("✅ Created custom metric: score_accuracy")
+
+# %% [markdown]
+"""
+## Test the Metric
+
+Let's test our metric with an example to make sure it works!
+"""
+
+# %% Test metric
+test_output = """**Analysis:** The AI answer is well-grounded in the retrieved content.
+**Score:** 4.5
+**Justification:** The answer accurately reflects the information."""
+
+test_expected = "4.5"
+
+test_result = metric.score(output=test_output, expected_output=test_expected)
+print(f"\n🧪 Metric test:")
+print(f"   Input: LLM score=4.5, Expected score=4.5")
+print(f"   Result: {test_result.value:.2f} (should be 1.00)")
+print(f"   Reason: {test_result.reason}")
+
+if test_result.value == 1.0:
+    print("   ✅ Metric working correctly!")
+else:
+    print("   ❌ Metric test failed - check implementation")
+
+# %% [markdown]
+"""
+## Create the Metric Function
+
+Following the pattern from OpikOptimizerIntro.ipynb, we create a function
+that takes `dataset_item` and `llm_output` as parameters.
+
+**This is the signature Opik expects!**
+"""
+
+# %% Define metric function
+
+
+def score_accuracy_metric_func(dataset_item: dict, llm_output: str) -> score_result.ScoreResult:
+    """
+    Metric function for optimizer.
+
+    This follows the exact pattern from OpikOptimizerIntro.ipynb.
+
+    Args:
+        dataset_item: Full dataset item with all fields
+        llm_output: The LLM's response text
+
+    Returns:
+        ScoreResult from our custom metric
+    """
+    return metric.score(
+        output=llm_output,
+        expected_output=dataset_item["expected_output"]
+    )
+
+
+print("✅ Metric function ready")
+
+# %% [markdown]
+"""
+## Create the Initial ChatPrompt
+
+The ChatPrompt wraps our template in the format Opik expects.
+We put the template in the "user" role message.
+
+**Note:** We only specify the template here, NOT the model!
+The model configuration goes in the optimizer.
+"""
+
+# %% Create initial ChatPrompt
+initial_prompt = ChatPrompt(
+    messages=[
+        {
+            "role": "user",
+            "content": prompt_template  # The template with {question}, {ai_answer}, etc.
+        }
+    ]
+)
+
+print("✅ Created initial ChatPrompt")
+
+# %% Optimizer selection
+# Parse which optimizers to run
+enabled_optimizers = set()
+if args.optimizers.lower() == 'all':
+    enabled_optimizers = {'metaprompt', 'hierarchical', 'fewshot'}
+else:
+    enabled_optimizers = set(opt.strip().lower() for opt in args.optimizers.split(','))
+
+# Validate optimizer names
+valid_optimizers = {'metaprompt', 'hierarchical', 'fewshot'}
+invalid = enabled_optimizers - valid_optimizers
+if invalid:
+    print(f"❌ Invalid optimizer names: {invalid}")
+    print(f"   Valid options: {valid_optimizers}")
+    sys.exit(1)
+
+if not args.quiet:
+    print(f"\n✅ Will run optimizers: {', '.join(sorted(enabled_optimizers))}")
+
+# %% [markdown]
+"""
+---
+# BASELINE EVALUATION
+
+Before optimizing, let's see how well our initial prompt performs.
+This gives us a baseline to compare against!
+"""
+
+# %% Baseline evaluation
+print("\n" + "=" * 80)
+print("📊 BASELINE EVALUATION")
+print("=" * 80)
+print("⏳ This will take a few minutes...\n")
+
+# We'll use MetaPromptOptimizer for baseline evaluation
+baseline_optimizer = MetaPromptOptimizer(
+    model=args.model,
+    model_parameters=MODEL_PARAMS,
+    prompts_per_round=3,
+    enable_context=True,
+    num_task_examples=3,
+    n_threads=args.n_threads,
+    verbose=1,
+    seed=42
+)
+
+start_time = time.time()
+
+baseline_score = baseline_optimizer.evaluate_prompt(
+    prompt=initial_prompt,
+    dataset=train_dataset,
+    metric=score_accuracy_metric_func,
+    n_samples=len(train_df),
+    n_threads=args.n_threads
+)
+
+elapsed_time = time.time() - start_time
+
+print(f"\n📈 Baseline Score: {baseline_score:.4f}")
+print(f"   The initial prompt achieves {baseline_score*100:.1f}% accuracy")
+print(f"   Evaluation time: {elapsed_time/60:.1f} minutes")
+
+# Save baseline score
+with open(f"{RUN_DIR}/baseline_score.txt", "w") as f:
+    f.write(f"Baseline Score: {baseline_score:.4f}\n")
+    f.write(f"Accuracy: {baseline_score*100:.1f}%\n")
+    f.write(f"Evaluation time: {elapsed_time/60:.1f} minutes\n")
+
+# %% [markdown]
+"""
+---
+# OPTIMIZATION EXPERIMENTS
+
+We'll run three different optimizers and compare their results:
+
+1. **MetaPrompt** - Uses an LLM to critique and improve the prompt iteratively
+2. **Hierarchical Reflective** - Analyzes failure patterns and addresses root causes
+3. **Few-Shot Bayesian** - Optimizes few-shot examples using Bayesian search
+
+Each optimizer will run on the SAME training data, so we can fairly compare them!
+"""
+
+# %% [markdown]
+"""
+## Experiment 1: MetaPrompt Optimizer
+
+**How it works:**
+1. Analyzes the current prompt
+2. Identifies weaknesses based on failures
+3. Generates improved candidate prompts
+4. Tests each candidate
+5. Repeats for multiple rounds
+
+**Parameters:**
+- `prompts_per_round=3`: Generate 3 candidates each round
+- `enable_context=True`: Use task examples for context
+- `num_task_examples=3`: Include 3 examples
+- `n_threads=8`: Parallel evaluation for speed
+- `max_trials=N_TRIALS`: Run N_TRIALS optimization rounds
+"""
+
+# %% Run MetaPrompt optimization
+print("\n" + "=" * 80)
+print("🚀 OPTIMIZATION 1: MetaPrompt Optimizer")
+print("=" * 80)
+print("⏳ This may take several minutes...\n")
+
+metaprompt_optimizer = MetaPromptOptimizer(
+    model=args.model,
+    model_parameters=MODEL_PARAMS,
+    prompts_per_round=3,
+    enable_context=True,
+    num_task_examples=3,
+    n_threads=args.n_threads,
+    verbose=1,
+    seed=42
+)
+
+start_time = time.time()
+
+metaprompt_result = metaprompt_optimizer.optimize_prompt(
+    prompt=initial_prompt,
+    dataset=train_dataset,
+    metric=score_accuracy_metric_func,
+    n_samples=len(train_df),
+    n_trials=args.n_trials
+)
+
+elapsed_time = time.time() - start_time
+
+# %% Display MetaPrompt results
+print("\n" + "=" * 80)
+print("✅ MetaPrompt Optimization Complete!")
+print("=" * 80)
+
+metaprompt_result.display()
+
+print(f"\n📊 Summary:")
+print(f"   Baseline Score:  {baseline_score:.4f}")
+print(f"   Optimized Score: {metaprompt_result.score:.4f}")
+print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
+
+if metaprompt_result.initial_score is not None:
+    improvement = metaprompt_result.score - metaprompt_result.initial_score
+    improvement_pct = (improvement / metaprompt_result.initial_score) * 100
+    print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
+
+# %% Save MetaPrompt result
+output_file = f"{RUN_DIR}/optimized-metaprompt-messages.txt"
+with open(output_file, "w") as f:
+    f.write(f"MetaPrompt Optimization Results\n")
+    f.write(f"=" * 80 + "\n\n")
+    f.write(f"Baseline Score: {baseline_score:.4f}\n")
+    f.write(f"Optimized Score: {metaprompt_result.score:.4f}\n")
+    f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
+    f.write(f"=" * 80 + "\n")
+    f.write(f"OPTIMIZED PROMPT MESSAGES:\n")
+    f.write(f"=" * 80 + "\n\n")
+    for msg in metaprompt_result.prompt:
+        f.write(f"Role: {msg.get('role')}\n")
+        f.write(f"Content:\n{msg.get('content')}\n")
+        f.write("-" * 80 + "\n\n")
+
+print(f"\n💾 Saved optimized prompt to: {output_file}")
+
+# %% [markdown]
+"""
+---
+## Experiment 2: Hierarchical Reflective Optimizer
+
+**How it works:**
+1. Groups failures into batches
+2. Analyzes root causes hierarchically
+3. Generates fixes targeting those causes
+4. Tests and iterates
+
+**Parameters:**
+- `max_parallel_batches=3`: Process up to 3 batches in parallel
+- `batch_size=20`: Analyze 20 failures per batch
+- `convergence_threshold=0.01`: Stop if improvement < 1%
+"""
+
+# %% Run Hierarchical optimization
+print("\n" + "=" * 80)
+print("🚀 OPTIMIZATION 2: Hierarchical Reflective Optimizer")
+print("=" * 80)
+print("⏳ This may take several minutes...\n")
+
+hierarchical_optimizer = HierarchicalReflectiveOptimizer(
+    model=args.model,
+    model_parameters=MODEL_PARAMS,
+    max_parallel_batches=3,
+    batch_size=20,
+    convergence_threshold=0.01,
+    n_threads=args.n_threads,
+    verbose=1,
+    seed=42
+)
+
+start_time = time.time()
+
+hierarchical_result = hierarchical_optimizer.optimize_prompt(
+    prompt=initial_prompt,
+    dataset=train_dataset,
+    metric=score_accuracy_metric_func,
+    n_samples=len(train_df),
+    n_trials=args.n_trials
+)
+
+elapsed_time = time.time() - start_time
+
+# %% Display Hierarchical results
+print("\n" + "=" * 80)
+print("✅ Hierarchical Reflective Optimization Complete!")
+print("=" * 80)
+
+hierarchical_result.display()
+
+print(f"\n📊 Summary:")
+print(f"   Baseline Score:  {baseline_score:.4f}")
+print(f"   Optimized Score: {hierarchical_result.score:.4f}")
+print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
+
+if hierarchical_result.initial_score is not None:
+    improvement = hierarchical_result.score - hierarchical_result.initial_score
+    improvement_pct = (improvement / hierarchical_result.initial_score) * 100
+    print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
+
+# %% Save Hierarchical result
+output_file = f"{RUN_DIR}/optimized-hierarchical-messages.txt"
+with open(output_file, "w") as f:
+    f.write(f"Hierarchical Reflective Optimization Results\n")
+    f.write(f"=" * 80 + "\n\n")
+    f.write(f"Baseline Score: {baseline_score:.4f}\n")
+    f.write(f"Optimized Score: {hierarchical_result.score:.4f}\n")
+    f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
+    f.write(f"=" * 80 + "\n")
+    f.write(f"OPTIMIZED PROMPT MESSAGES:\n")
+    f.write(f"=" * 80 + "\n\n")
+    for msg in hierarchical_result.prompt:
+        f.write(f"Role: {msg.get('role')}\n")
+        f.write(f"Content:\n{msg.get('content')}\n")
+        f.write("-" * 80 + "\n\n")
+
+print(f"\n💾 Saved optimized prompt to: {output_file}")
+
+# %% [markdown]
+"""
+---
+## Experiment 3: Few-Shot Bayesian Optimizer
+
+**How it works:**
+1. Searches for optimal few-shot examples
+2. Uses Bayesian optimization to explore efficiently
+3. Finds the best combination of demonstration examples
+
+**Parameters:**
+- `n_trials=10`: Number of Bayesian optimization trials
+"""
+
+# %% Run Few-Shot optimization
+print("\n" + "=" * 80)
+print("🚀 OPTIMIZATION 3: Few-Shot Bayesian Optimizer")
+print("=" * 80)
+print("⏳ This may take several minutes...\n")
+
+fewshot_optimizer = FewShotBayesianOptimizer(
+    model=args.model,
+    model_parameters=MODEL_PARAMS,
+    n_trials=10,
+    n_threads=args.n_threads,
+    verbose=1,
+    seed=42
+)
+
+start_time = time.time()
+
+fewshot_result = fewshot_optimizer.optimize_prompt(
+    prompt=initial_prompt,
+    dataset=train_dataset,
+    metric=score_accuracy_metric_func,
+    n_samples=len(train_df),
+    n_trials=args.n_trials
+)
+
+elapsed_time = time.time() - start_time
+
+# %% Display Few-Shot results
+print("\n" + "=" * 80)
+print("✅ Few-Shot Bayesian Optimization Complete!")
+print("=" * 80)
+
+fewshot_result.display()
+
+print(f"\n📊 Summary:")
+print(f"   Baseline Score:  {baseline_score:.4f}")
+print(f"   Optimized Score: {fewshot_result.score:.4f}")
+print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
+
+if fewshot_result.initial_score is not None:
+    improvement = fewshot_result.score - fewshot_result.initial_score
+    improvement_pct = (improvement / fewshot_result.initial_score) * 100
+    print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
+
+# %% Save Few-Shot result
+output_file = f"{RUN_DIR}/optimized-fewshot-messages.txt"
+with open(output_file, "w") as f:
+    f.write(f"Few-Shot Bayesian Optimization Results\n")
+    f.write(f"=" * 80 + "\n\n")
+    f.write(f"Baseline Score: {baseline_score:.4f}\n")
+    f.write(f"Optimized Score: {fewshot_result.score:.4f}\n")
+    f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
+    f.write(f"=" * 80 + "\n")
+    f.write(f"OPTIMIZED PROMPT MESSAGES:\n")
+    f.write(f"=" * 80 + "\n\n")
+    for msg in fewshot_result.prompt:
+        f.write(f"Role: {msg.get('role')}\n")
+        f.write(f"Content:\n{msg.get('content')}\n")
+        f.write("-" * 80 + "\n\n")
+
+print(f"\n💾 Saved optimized prompt to: {output_file}")
+
+# %% [markdown]
+"""
+---
+# FINAL COMPARISON
+
+Let's compare all three optimizers side-by-side!
+"""
+
+# %% Compare all results
+import pandas as pd
+
+# Calculate improvements
+def calc_improvement(result, baseline):
+    if result.initial_score is not None and result.initial_score != 0:
+        return ((result.score - result.initial_score) / result.initial_score) * 100
+    elif baseline != 0:
+        return ((result.score - baseline) / baseline) * 100
+    else:
+        return 0.0
+
+results_df = pd.DataFrame({
+    "Optimizer": ["Baseline", "MetaPrompt", "Hierarchical", "Few-Shot"],
+    "Score": [
+        baseline_score,
+        metaprompt_result.score,
+        hierarchical_result.score,
+        fewshot_result.score
+    ],
+    "Improvement": [
+        "—",
+        f"{calc_improvement(metaprompt_result, baseline_score):+.1f}%",
+        f"{calc_improvement(hierarchical_result, baseline_score):+.1f}%",
+        f"{calc_improvement(fewshot_result, baseline_score):+.1f}%"
+    ],
+    "Output File": [
+        "—",
+        "optimized-metaprompt-messages.txt",
+        "optimized-hierarchical-messages.txt",
+        "optimized-fewshot-messages.txt"
+    ]
+})
+
+print("\n" + "=" * 80)
+print("📊 FINAL RESULTS COMPARISON")
+print("=" * 80)
+print()
+print(results_df.to_string(index=False))
+
+# Find winner (excluding baseline)
+best_idx = results_df[results_df["Optimizer"] != "Baseline"]["Score"].idxmax()
+winner = results_df.loc[best_idx, "Optimizer"]
+winner_score = results_df.loc[best_idx, "Score"]
+
+print(f"\n🏆 WINNER: {winner} with score {winner_score:.4f}")
+print(f"\n📁 All results saved to: {RUN_DIR}/")
+
+# Save comparison table
+with open(f"{RUN_DIR}/comparison_table.txt", "w") as f:
+    f.write("FINAL RESULTS COMPARISON\n")
+    f.write("=" * 80 + "\n\n")
+    f.write(results_df.to_string(index=False))
+    f.write(f"\n\n🏆 WINNER: {winner} with score {winner_score:.4f}\n")
+
+# %% Save JSON summary (always created for easy parsing/testing)
+summary = {
+    "test_config": {
+        "sample_size": args.sample_size,
+        "n_trials": args.n_trials,
+        "n_threads": args.n_threads,
+        "model": args.model,
+        "timestamp": os.path.basename(RUN_DIR),
+        "enabled_optimizers": list(enabled_optimizers)
+    },
+    "baseline": {
+        "score": float(baseline_score)
+    },
+    "optimizers": {},
+    "status": "success"
+}
+
+# Add optimizer results
+for name, result_obj in [
+    ('MetaPrompt', metaprompt_result),
+    ('Hierarchical', hierarchical_result),
+    ('FewShot', fewshot_result)
+]:
+    if result_obj is not None:
+        summary["optimizers"][name] = {
+            "score": float(result_obj.score),
+            "improvement_pct": float(
+                ((result_obj.score - baseline_score) / baseline_score) * 100
+            ) if baseline_score != 0 else 0.0
+        }
+
+# Find winner
+if summary["optimizers"]:
+    winner_name = max(summary["optimizers"].keys(),
+                     key=lambda k: summary["optimizers"][k]["score"])
+    summary["winner"] = {
+        "name": winner_name,
+        "score": summary["optimizers"][winner_name]["score"]
+    }
+
+# Save JSON
+json_path = f"{RUN_DIR}/results_summary.json"
+with open(json_path, "w") as f:
+    json.dump(summary, f, indent=2)
+
+if not args.quiet:
+    print(f"\n💾 JSON summary saved to: {json_path}")
+
+# %% [markdown]
+"""
+## View Results in Opik Dashboard
+
+You can see detailed visualizations, trace logs, and experiment tracking
+in the Opik web interface.
+"""
+
+# %% Link to Opik dashboard
+print(f"\n🔗 View detailed results in Opik:")
+print(f"   https://www.comet.com/opik")
+print("\n✨ Workshop complete!")
+print("\n📚 Key Takeaways:")
+print("   1. Always measure baseline before optimizing")
+print("   2. Different optimizers work better for different tasks")
+print("   3. Stratification matters for reliable evaluation")
+print("   4. Custom metrics let you optimize for your specific goals")
+print("   5. The patterns in utils.py can be reused in your projects")
+print(f"\n📁 All outputs saved to: {RUN_DIR}/")

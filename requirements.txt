@@ -1,0 +1,19 @@
+# Core dependencies
+opik
+opik-optimizer
+openai
+litellm
+python-dotenv
+
+# Data processing
+pandas
+scikit-learn
+numpy
+
+# For rich terminal output (used by Opik)
+rich
+
+# Testing
+pytest
+pytest-cov
+pytest-timeout
