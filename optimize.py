@@ -30,18 +30,18 @@ CONFIGURATION - Default values (can be overridden via CLI arguments)
 DEFAULT_SAMPLE_SIZE = None  # None = use full dataset (~153 rows → 102 train, 51 test)
 DEFAULT_N_TRIALS = 3        # Number of optimization rounds per optimizer
 DEFAULT_N_THREADS = 8       # Parallel threads for evaluation
-DEFAULT_MODEL = "openai/gpt-5-mini"  # LLM model in LiteLLM format
+DEFAULT_MODEL = "openai/responses/gpt-5-mini"  # LLM model in LiteLLM format (Responses API)
 
 # ⚠️  COST & TIME WARNING:
 # - Full dataset (153 samples): ~4,500 API calls, 45-90 minutes, ~$20-50
 # - Small test (15 samples): ~150 API calls, 5-10 minutes, ~$1-2
 # 💡 Recommendation: Start with --sample-size 15 to verify everything works!
 
-MODEL_PARAMS = {
-    "reasoning": {"effort": "low"},      # Faster reasoning
-    "text": {"verbosity": "low"},        # Concise outputs
-    "max_output_tokens": 65536           # Large token limit
-}
+# Default Responses API parameters (LiteLLM flat format)
+# See: https://docs.litellm.ai/docs/providers/openai/responses_api
+DEFAULT_REASONING_EFFORT = "low"         # "low" | "medium" | "high" | "xhigh"
+DEFAULT_VERBOSITY = "low"                # "low" | "medium" | "high"
+DEFAULT_MAX_OUTPUT_TOKENS = 65536        # Max tokens (includes reasoning + output)
 
 # %% Setup and imports
 import os
@@ -96,10 +96,25 @@ def parse_args():
                        help='Base directory for outputs')
     parser.add_argument('--quiet', action='store_true',
                        help='Suppress verbose output')
+    parser.add_argument('--reasoning-effort', type=str, default=DEFAULT_REASONING_EFFORT,
+                       choices=['low', 'medium', 'high', 'xhigh'],
+                       help='Reasoning effort for Responses API')
+    parser.add_argument('--verbosity', type=str, default=DEFAULT_VERBOSITY,
+                       choices=['low', 'medium', 'high'],
+                       help='Output verbosity for Responses API')
+    parser.add_argument('--max-output-tokens', type=int, default=DEFAULT_MAX_OUTPUT_TOKENS,
+                       help='Max output tokens for Responses API')
     return parser.parse_args()
 
 # Parse arguments
 args = parse_args()
+
+# Build model parameters from CLI arguments
+model_params = {
+    "reasoning_effort": args.reasoning_effort,
+    "verbosity": args.verbosity,
+    "max_output_tokens": args.max_output_tokens
+}
 
 # Print configuration
 if not args.quiet:
@@ -110,7 +125,7 @@ if not args.quiet:
     print(f"Optimization trials: {args.n_trials}")
     print(f"Parallel threads: {args.n_threads}")
     print(f"Model: {args.model}")
-    print(f"Model parameters: {MODEL_PARAMS}")
+    print(f"Model parameters: {model_params}")
     print(f"Optimizers: {args.optimizers}")
     print("=" * 80)
 
@@ -192,7 +207,7 @@ We create separate train and test datasets.
 # %% Create Opik datasets
 # Initialize Opik client with a project name
 opik_client = Opik(project_name="grading-rubric-optimization")
-print(f"✅ Connected to Opik project: grading-rubric-optimization")
+print("✅ Connected to Opik project: grading-rubric-optimization")
 
 
 def create_opik_dataset(name: str, df: pd.DataFrame):
@@ -249,7 +264,7 @@ Opik automatically maps dataset fields to template variables by name:
 # %% Load prompt template
 prompt_template = load_text_template("grading-rubric-prompt.txt")
 
-print(f"\n📄 Template preview (first 300 chars):")
+print("\n📄 Template preview (first 300 chars):")
 print("-" * 80)
 print(prompt_template[:300] + "...")
 print("-" * 80)
@@ -367,8 +382,8 @@ test_output = """**Analysis:** The AI answer is well-grounded in the retrieved c
 test_expected = "4.5"
 
 test_result = metric.score(output=test_output, expected_output=test_expected)
-print(f"\n🧪 Metric test:")
-print(f"   Input: LLM score=4.5, Expected score=4.5")
+print("\n🧪 Metric test:")
+print("   Input: LLM score=4.5, Expected score=4.5")
 print(f"   Result: {test_result.value:.2f} (should be 1.00)")
 print(f"   Reason: {test_result.reason}")
 
@@ -429,7 +444,9 @@ initial_prompt = ChatPrompt(
             "role": "user",
             "content": prompt_template  # The template with {question}, {ai_answer}, etc.
         }
-    ]
+    ],
+    model=args.model,          # Use user's model for prompt evaluation
+    model_kwargs=model_params  # Pass Responses API parameters to prompt
 )
 
 print("✅ Created initial ChatPrompt")
@@ -470,8 +487,6 @@ print("⏳ This will take a few minutes...\n")
 
 # We'll use MetaPromptOptimizer for baseline evaluation
 baseline_optimizer = MetaPromptOptimizer(
-    model=args.model,
-    model_parameters=MODEL_PARAMS,
     prompts_per_round=3,
     enable_context=True,
     num_task_examples=3,
@@ -542,8 +557,6 @@ print("=" * 80)
 print("⏳ This may take several minutes...\n")
 
 metaprompt_optimizer = MetaPromptOptimizer(
-    model=args.model,
-    model_parameters=MODEL_PARAMS,
     prompts_per_round=3,
     enable_context=True,
     num_task_examples=3,
@@ -571,7 +584,7 @@ print("=" * 80)
 
 metaprompt_result.display()
 
-print(f"\n📊 Summary:")
+print("\n📊 Summary:")
 print(f"   Baseline Score:  {baseline_score:.4f}")
 print(f"   Optimized Score: {metaprompt_result.score:.4f}")
 print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
@@ -584,14 +597,14 @@ if metaprompt_result.initial_score is not None:
 # %% Save MetaPrompt result
 output_file = f"{RUN_DIR}/optimized-metaprompt-messages.txt"
 with open(output_file, "w") as f:
-    f.write(f"MetaPrompt Optimization Results\n")
-    f.write(f"=" * 80 + "\n\n")
+    f.write("MetaPrompt Optimization Results\n")
+    f.write("=" * 80 + "\n\n")
     f.write(f"Baseline Score: {baseline_score:.4f}\n")
     f.write(f"Optimized Score: {metaprompt_result.score:.4f}\n")
     f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
-    f.write(f"=" * 80 + "\n")
-    f.write(f"OPTIMIZED PROMPT MESSAGES:\n")
-    f.write(f"=" * 80 + "\n\n")
+    f.write("=" * 80 + "\n")
+    f.write("OPTIMIZED PROMPT MESSAGES:\n")
+    f.write("=" * 80 + "\n\n")
     for msg in metaprompt_result.prompt:
         f.write(f"Role: {msg.get('role')}\n")
         f.write(f"Content:\n{msg.get('content')}\n")
@@ -623,8 +636,6 @@ print("=" * 80)
 print("⏳ This may take several minutes...\n")
 
 hierarchical_optimizer = HierarchicalReflectiveOptimizer(
-    model=args.model,
-    model_parameters=MODEL_PARAMS,
     max_parallel_batches=3,
     batch_size=20,
     convergence_threshold=0.01,
@@ -652,7 +663,7 @@ print("=" * 80)
 
 hierarchical_result.display()
 
-print(f"\n📊 Summary:")
+print("\n📊 Summary:")
 print(f"   Baseline Score:  {baseline_score:.4f}")
 print(f"   Optimized Score: {hierarchical_result.score:.4f}")
 print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
@@ -665,14 +676,14 @@ if hierarchical_result.initial_score is not None:
 # %% Save Hierarchical result
 output_file = f"{RUN_DIR}/optimized-hierarchical-messages.txt"
 with open(output_file, "w") as f:
-    f.write(f"Hierarchical Reflective Optimization Results\n")
-    f.write(f"=" * 80 + "\n\n")
+    f.write("Hierarchical Reflective Optimization Results\n")
+    f.write("=" * 80 + "\n\n")
     f.write(f"Baseline Score: {baseline_score:.4f}\n")
     f.write(f"Optimized Score: {hierarchical_result.score:.4f}\n")
     f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
-    f.write(f"=" * 80 + "\n")
-    f.write(f"OPTIMIZED PROMPT MESSAGES:\n")
-    f.write(f"=" * 80 + "\n\n")
+    f.write("=" * 80 + "\n")
+    f.write("OPTIMIZED PROMPT MESSAGES:\n")
+    f.write("=" * 80 + "\n\n")
     for msg in hierarchical_result.prompt:
         f.write(f"Role: {msg.get('role')}\n")
         f.write(f"Content:\n{msg.get('content')}\n")
@@ -701,9 +712,8 @@ print("=" * 80)
 print("⏳ This may take several minutes...\n")
 
 fewshot_optimizer = FewShotBayesianOptimizer(
-    model=args.model,
-    model_parameters=MODEL_PARAMS,
-    n_trials=10,
+    min_examples=2,
+    max_examples=8,
     n_threads=args.n_threads,
     verbose=1,
     seed=42
@@ -716,7 +726,7 @@ fewshot_result = fewshot_optimizer.optimize_prompt(
     dataset=train_dataset,
     metric=score_accuracy_metric_func,
     n_samples=len(train_df),
-    n_trials=args.n_trials
+    max_trials=args.n_trials
 )
 
 elapsed_time = time.time() - start_time
@@ -728,7 +738,7 @@ print("=" * 80)
 
 fewshot_result.display()
 
-print(f"\n📊 Summary:")
+print("\n📊 Summary:")
 print(f"   Baseline Score:  {baseline_score:.4f}")
 print(f"   Optimized Score: {fewshot_result.score:.4f}")
 print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
@@ -741,14 +751,14 @@ if fewshot_result.initial_score is not None:
 # %% Save Few-Shot result
 output_file = f"{RUN_DIR}/optimized-fewshot-messages.txt"
 with open(output_file, "w") as f:
-    f.write(f"Few-Shot Bayesian Optimization Results\n")
-    f.write(f"=" * 80 + "\n\n")
+    f.write("Few-Shot Bayesian Optimization Results\n")
+    f.write("=" * 80 + "\n\n")
     f.write(f"Baseline Score: {baseline_score:.4f}\n")
     f.write(f"Optimized Score: {fewshot_result.score:.4f}\n")
     f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
-    f.write(f"=" * 80 + "\n")
-    f.write(f"OPTIMIZED PROMPT MESSAGES:\n")
-    f.write(f"=" * 80 + "\n\n")
+    f.write("=" * 80 + "\n")
+    f.write("OPTIMIZED PROMPT MESSAGES:\n")
+    f.write("=" * 80 + "\n\n")
     for msg in fewshot_result.prompt:
         f.write(f"Role: {msg.get('role')}\n")
         f.write(f"Content:\n{msg.get('content')}\n")
@@ -876,8 +886,8 @@ in the Opik web interface.
 """
 
 # %% Link to Opik dashboard
-print(f"\n🔗 View detailed results in Opik:")
-print(f"   https://www.comet.com/opik")
+print("\n🔗 View detailed results in Opik:")
+print("   https://www.comet.com/opik")
 print("\n✨ Workshop complete!")
 print("\n📚 Key Takeaways:")
 print("   1. Always measure baseline before optimizing")

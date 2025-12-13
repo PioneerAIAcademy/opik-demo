@@ -1,19 +1,19 @@
 # Core dependencies
-opik
-opik-optimizer
-openai
-litellm
-python-dotenv
+opik>=1.9.46
+opik-optimizer>=2.3.6
+openai>=2.11.0
+litellm>=1.80.8
+python-dotenv>=1.2.1
 
 # Data processing
-pandas
-scikit-learn
-numpy
+pandas>=2.3.3
+scikit-learn>=1.8.0
+numpy>=2.3.5
 
 # For rich terminal output (used by Opik)
-rich
+rich>=14.2.0
 
 # Testing
-pytest
-pytest-cov
-pytest-timeout
+pytest>=9.0.2
+pytest-cov>=7.0.0
+pytest-timeout>=2.4.0
