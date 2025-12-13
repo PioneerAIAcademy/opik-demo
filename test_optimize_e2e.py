@@ -61,7 +61,7 @@ class TestOptimizeE2E:
         result = subprocess.run(
             [
                 '.venv/bin/python', 'optimize.py',
-                '--sample-size', '10',
+                '--sample-size', '30',  # Updated from 10 (need 12/12/6 with 40/40/20 split)
                 '--n-trials', '1',
                 '--n-threads', '4',
                 '--output-dir', output_dir,
@@ -105,20 +105,24 @@ class TestOptimizeE2E:
         with open(json_path) as f:
             summary = json.load(f)
 
-        print(f"\n✓ JSON summary:")
+        print("\n✓ JSON summary:")
         print(json.dumps(summary, indent=2))
 
         # Validate structure
         assert "test_config" in summary
         assert "baseline" in summary
         assert "optimizers" in summary
-        assert summary["test_config"]["sample_size"] == 10
+        assert summary["test_config"]["sample_size"] == 30  # Updated from 10
         assert summary["test_config"]["n_trials"] == 1
 
-        # Validate baseline
-        baseline_score = summary["baseline"]["score"]
-        assert 0.0 <= baseline_score <= 1.0
-        print(f"\n✓ Baseline: {baseline_score:.4f}")
+        # Validate baseline (now has train_score and test_score)
+        assert "train_score" in summary["baseline"]
+        assert "test_score" in summary["baseline"]
+        baseline_train = summary["baseline"]["train_score"]
+        baseline_test = summary["baseline"]["test_score"]
+        assert 0.0 <= baseline_train <= 1.0
+        assert 0.0 <= baseline_test <= 1.0
+        print(f"\n✓ Baseline: train={baseline_train:.4f}, test={baseline_test:.4f}")
 
         # Validate optimizers
         expected_optimizers = {"MetaPrompt", "Hierarchical", "FewShot"}
@@ -127,9 +131,12 @@ class TestOptimizeE2E:
             f"Expected {expected_optimizers}, got {actual_optimizers}"
 
         for opt_name, opt_data in summary["optimizers"].items():
-            score = opt_data["score"]
-            assert 0.0 <= score <= 1.0, f"{opt_name} score {score} out of range"
-            print(f"✓ {opt_name}: {score:.4f} ({opt_data['improvement_pct']:+.1f}%)")
+            train_score = opt_data["train_score"]
+            test_score = opt_data["test_score"]
+            assert 0.0 <= train_score <= 1.0, f"{opt_name} train_score {train_score} out of range"
+            assert 0.0 <= test_score <= 1.0, f"{opt_name} test_score {test_score} out of range"
+            print(f"✓ {opt_name}: train={train_score:.4f}, test={test_score:.4f} "
+                  f"(test improvement: {opt_data['test_improvement_pct']:+.1f}%)")
 
         # Verify output files
         expected_files = [
@@ -148,11 +155,14 @@ class TestOptimizeE2E:
 
         print(f"\n✓ All {len(expected_files)} files created")
 
-        # Verify winner
+        # Verify winner (now has train_score and test_score)
         assert "winner" in summary
         assert summary["winner"]["name"] in expected_optimizers
+        assert "train_score" in summary["winner"]
+        assert "test_score" in summary["winner"]
         print(f"\n✓ Winner: {summary['winner']['name']} "
-              f"({summary['winner']['score']:.4f})")
+              f"(train={summary['winner']['train_score']:.4f}, "
+              f"test={summary['winner']['test_score']:.4f})")
 
         # Verify stdout markers
         stdout = result.stdout

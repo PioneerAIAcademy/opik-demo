@@ -15,7 +15,6 @@ import os
 from datetime import datetime
 from typing import Optional, Tuple
 import pandas as pd
-import numpy as np
 from sklearn.model_selection import train_test_split
 
 
@@ -71,14 +70,24 @@ def load_csv_with_stratified_split(
     csv_path: str,
     sample_size: Optional[int] = None,
     stratify_column: str = "score",
-    random_state: int = 42
-) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    random_state: int = 42,
+    split_type: str = "train_test",
+    train_dev_test_ratio: str = "40/40/20"
+) -> Tuple[pd.DataFrame, ...]:
     """
-    Load a CSV file and split it into train/test sets with stratification.
+    Load a CSV file and split it into train/dev/test sets with stratification.
 
-    Uses dynamic 2/3 train, 1/3 test split based on sample size.
+    Supports two split types:
+    - "train_test": 2/3 train, 1/3 test (legacy mode)
+    - "train_dev_test": Custom ratio (default 40/40/20)
+
     Stratification ensures that the distribution of values in the stratify_column
-    is maintained in both train and test sets. This is important for evaluation!
+    is maintained in all sets. This is critical for reliable evaluation!
+
+    For prompt optimization with ~150 samples, 40/40/20 is recommended:
+    - Larger dev set (40%) provides reliable optimization signal
+    - Smaller train set (40%) is sufficient (optimizers only need 30-40 samples)
+    - Test set (20%) adequate for final evaluation
 
     Works with datasets of any size - handles small and large datasets robustly.
 
@@ -87,27 +96,41 @@ def load_csv_with_stratified_split(
         sample_size: Total number of samples to use (None = use all data)
         stratify_column: Column to stratify on (maintains distribution)
         random_state: Random seed for reproducibility
+        split_type: "train_test" or "train_dev_test"
+        train_dev_test_ratio: Ratio as "train/dev/test" (e.g., "40/40/20", "30/50/20")
+                             Only used when split_type="train_dev_test"
 
     Returns:
-        Tuple of (train_df, test_df)
+        If split_type="train_test": Tuple of (train_df, test_df)
+        If split_type="train_dev_test": Tuple of (train_df, dev_df, test_df)
 
     Raises:
         ValueError: If dataset doesn't have enough rows
 
     Example:
+        >>> # Two-way split
         >>> train, test = load_csv_with_stratified_split(
         ...     "evaluations.csv",
-        ...     sample_size=15,  # 10 train, 5 test
-        ...     stratify_column="score"
+        ...     sample_size=15,
+        ...     split_type="train_test"
         ... )
         >>> print(f"Train: {len(train)}, Test: {len(test)}")
 
+        >>> # Three-way split (recommended for optimization)
+        >>> train, dev, test = load_csv_with_stratified_split(
+        ...     "evaluations.csv",
+        ...     sample_size=None,
+        ...     split_type="train_dev_test"
+        ... )
+        >>> print(f"Train: {len(train)}, Dev: {len(dev)}, Test: {len(test)}")
+
     Reuse this in your projects:
-        # For any CSV with categorical or continuous targets
-        train_data, test_data = load_csv_with_stratified_split(
+        # For optimization tasks with validation
+        train_data, dev_data, test_data = load_csv_with_stratified_split(
             "my_data.csv",
-            sample_size=None,  # Use all data
-            stratify_column="label"  # or "score", "rating", etc.
+            sample_size=None,
+            stratify_column="label",
+            split_type="train_dev_test"
         )
     """
     print(f"📊 Loading CSV from {csv_path}...")
@@ -134,13 +157,6 @@ def load_csv_with_stratified_split(
             f"Dataset has only {len(df)} rows, but requested {sample_size} samples"
         )
 
-    # Calculate train/test sizes (2/3 train, 1/3 test)
-    train_size = int(sample_size * 2 / 3)
-    test_size = sample_size - train_size
-
-    print(f"\n   Split: {train_size} train ({train_size/sample_size*100:.0f}%), "
-          f"{test_size} test ({test_size/sample_size*100:.0f}%)")
-
     # First, sample the data if needed (with stratification)
     if sample_size < len(df):
         # Use train_test_split to get stratified sample, then take only one part
@@ -153,42 +169,120 @@ def load_csv_with_stratified_split(
     else:
         df_sample = df
 
-    # Now split the sampled data into train/test (2/3:1/3)
     # Recalculate score groups for the sample
     sample_score_groups = df_sample[stratify_column].round().astype(int)
 
-    # Try stratified split, fall back to random split if too few samples per class
-    try:
-        train_df, test_df = train_test_split(
-            df_sample,
-            train_size=train_size,
-            test_size=test_size,
-            stratify=sample_score_groups,
-            random_state=random_state
-        )
-        print(f"   ✓ Using stratified split")
-    except ValueError as e:
-        # Stratification requires at least 2 members per class
-        # Fall back to random split for small samples
-        print(f"   ⚠ Stratification not possible (sample too small), using random split")
-        train_df, test_df = train_test_split(
-            df_sample,
-            train_size=train_size,
-            test_size=test_size,
-            random_state=random_state
-        )
+    # Perform split based on type
+    if split_type == "train_dev_test":
+        # Parse the ratio string (e.g., "40/40/20")
+        try:
+            train_pct, dev_pct, test_pct = map(int, train_dev_test_ratio.split('/'))
+            if train_pct + dev_pct + test_pct != 100:
+                raise ValueError(f"Split ratios must sum to 100, got {train_pct + dev_pct + test_pct}")
+        except Exception as e:
+            raise ValueError(f"Invalid train_dev_test_ratio '{train_dev_test_ratio}': {e}")
 
-    print(f"\n   ✅ Split complete:")
-    print(f"      Training: {len(train_df)} samples")
-    print(f"      Test: {len(test_df)} samples")
+        # Calculate sizes based on ratio
+        train_size = int(sample_size * train_pct / 100)
+        dev_size = int(sample_size * dev_pct / 100)
+        test_size = sample_size - train_size - dev_size  # Remainder to handle rounding
 
-    # Show score distribution in each split
-    print(f"\n   Training score distribution:")
-    print(train_df[stratify_column].round().value_counts().sort_index())
-    print(f"\n   Test score distribution:")
-    print(test_df[stratify_column].round().value_counts().sort_index())
+        print(f"\n   Split ratio: {train_dev_test_ratio}")
+        print(f"   Split: {train_size} train ({train_size/sample_size*100:.0f}%), "
+              f"{dev_size} dev ({dev_size/sample_size*100:.0f}%), "
+              f"{test_size} test ({test_size/sample_size*100:.0f}%)")
 
-    return train_df, test_df
+        # Try stratified split, fall back to random split if too few samples per class
+        try:
+            # First split: train vs (dev+test)
+            train_df, dev_test_df = train_test_split(
+                df_sample,
+                train_size=train_size,
+                stratify=sample_score_groups,
+                random_state=random_state
+            )
+
+            # Second split: dev vs test
+            dev_test_score_groups = dev_test_df[stratify_column].round().astype(int)
+            dev_df, test_df = train_test_split(
+                dev_test_df,
+                train_size=dev_size,
+                test_size=test_size,
+                stratify=dev_test_score_groups,
+                random_state=random_state
+            )
+            print("   ✓ Using stratified split")
+        except ValueError:
+            # Stratification requires at least 2 members per class
+            # Fall back to random split for small samples
+            print("   ⚠ Stratification not possible (sample too small), using random split")
+            train_df, dev_test_df = train_test_split(
+                df_sample,
+                train_size=train_size,
+                random_state=random_state
+            )
+            dev_df, test_df = train_test_split(
+                dev_test_df,
+                train_size=dev_size,
+                test_size=test_size,
+                random_state=random_state
+            )
+
+        print("\n   ✅ Split complete:")
+        print(f"      Training: {len(train_df)} samples")
+        print(f"      Dev/Validation: {len(dev_df)} samples")
+        print(f"      Test: {len(test_df)} samples")
+
+        # Show score distribution in each split
+        print("\n   Training score distribution:")
+        print(train_df[stratify_column].round().value_counts().sort_index())
+        print("\n   Dev score distribution:")
+        print(dev_df[stratify_column].round().value_counts().sort_index())
+        print("\n   Test score distribution:")
+        print(test_df[stratify_column].round().value_counts().sort_index())
+
+        return train_df, dev_df, test_df
+
+    else:  # train_test split (legacy)
+        # Two-way split: 2/3 train, 1/3 test
+        train_size = int(sample_size * 2 / 3)
+        test_size = sample_size - train_size
+
+        print(f"\n   Split: {train_size} train ({train_size/sample_size*100:.0f}%), "
+              f"{test_size} test ({test_size/sample_size*100:.0f}%)")
+
+        # Try stratified split, fall back to random split if too few samples per class
+        try:
+            train_df, test_df = train_test_split(
+                df_sample,
+                train_size=train_size,
+                test_size=test_size,
+                stratify=sample_score_groups,
+                random_state=random_state
+            )
+            print("   ✓ Using stratified split")
+        except ValueError:
+            # Stratification requires at least 2 members per class
+            # Fall back to random split for small samples
+            print("   ⚠ Stratification not possible (sample too small), using random split")
+            train_df, test_df = train_test_split(
+                df_sample,
+                train_size=train_size,
+                test_size=test_size,
+                random_state=random_state
+            )
+
+        print("\n   ✅ Split complete:")
+        print(f"      Training: {len(train_df)} samples")
+        print(f"      Test: {len(test_df)} samples")
+
+        # Show score distribution in each split
+        print("\n   Training score distribution:")
+        print(train_df[stratify_column].round().value_counts().sort_index())
+        print("\n   Test score distribution:")
+        print(test_df[stratify_column].round().value_counts().sort_index())
+
+        return train_df, test_df
 
 
 def load_text_template(file_path: str) -> str:

@@ -77,14 +77,19 @@ python optimize.py
 python optimize.py --sample-size 10 --n-trials 1
 ```
 
-### Specific Optimizers
+### Run Specific Optimizers (Fast!)
 ```bash
+# Run only MetaPrompt (~5-10 min instead of 15-30 min)
+python optimize.py --sample-size 15 --optimizers metaprompt
+
+# Run two optimizers
 python optimize.py --optimizers metaprompt,hierarchical
 ```
 
-### Full Dataset
+### Full Test
 ```bash
-python optimize.py  # Uses all ~153 samples
+# Run all three optimizers with full dataset (~45-90 min)
+python optimize.py --sample-size None
 ```
 
 ### CLI Arguments
@@ -94,9 +99,12 @@ python optimize.py  # Uses all ~153 samples
 | `--sample-size N` | None | Number of samples (None = full ~153) |
 | `--n-trials N` | 3 | Optimization trials per optimizer |
 | `--n-threads N` | 8 | Parallel threads for evaluation |
-| `--model MODEL` | openai/gpt-5-mini | LLM model (LiteLLM format) |
+| `--model MODEL` | openai/responses/gpt-5-mini | LLM model (LiteLLM format) |
 | `--optimizers LIST` | all | Comma-separated optimizer list |
 | `--output-dir DIR` | runs | Output directory |
+| `--reasoning-effort LEVEL` | low | Reasoning effort (low/medium/high/xhigh) |
+| `--verbosity LEVEL` | low | Output verbosity (low/medium/high) |
+| `--max-output-tokens N` | 65536 | Max output tokens for Responses API |
 | `--quiet` | False | Suppress verbose output |
 
 **Note**: JSON summary (`results_summary.json`) is automatically created in every run for easy verification.
@@ -151,49 +159,10 @@ pytest -m "not e2e" -v
 
 ## 📖 Understanding the Code
 
-### The Dataset
-
-- **153 examples** of AI-generated answers with human scores (1-5)
-- **Columns**: question, human_answer, ai_answer, retrieved_content, score
-- **Dynamic Split**: 2/3 train, 1/3 test based on sample size
-  - Full dataset (153): 102 train, 51 test
-  - Sample (15): 10 train, 5 test
-- **Stratified**: Maintains score distribution in both sets
-
-### The Metric
-
-Our custom `ScoreAccuracyMetric` compares LLM scores to human scores:
-
-```python
-# Perfect match (LLM=4.0, Human=4.0) → accuracy = 1.00
-# Off by 0.5 (LLM=4.0, Human=4.5) → accuracy = 0.875
-# Off by 1.0 (LLM=4.0, Human=5.0) → accuracy = 0.75
-# Formula: 1 - (abs(difference) / 4.0)
-```
-
-### The Optimizers
-
-1. **MetaPrompt** - Uses LLM to iteratively critique and improve the prompt
-2. **Hierarchical Reflective** - Analyzes failure patterns systematically
-3. **Few-Shot Bayesian** - Optimizes demonstration examples using Bayesian search
-
-### The Pattern
-
-All optimizers follow the same pattern from OpikOptimizerIntro.ipynb:
-
-```python
-# 1. Create optimizer
-optimizer = MetaPromptOptimizer(model="openai/gpt-5-mini", ...)
-
-# 2. Evaluate baseline
-baseline_score = optimizer.evaluate_prompt(prompt, dataset, metric, ...)
-
-# 3. Optimize
-result = optimizer.optimize_prompt(prompt, dataset, metric, ...)
-
-# 4. Display results
-result.display()
-```
+- **Dataset**: 153 examples with human scores (1-5), split 2/3 train, 1/3 test with stratification
+- **Metric**: Custom `ScoreAccuracyMetric` compares LLM scores to human scores (formula: `1 - abs(diff) / 4.0`)
+- **Optimizers**: MetaPrompt (iterative critique), Hierarchical (failure analysis), Few-Shot (Bayesian search)
+- **Pattern**: All optimizers follow: create → evaluate baseline → optimize → display results
 
 ## 🔧 Reusable Functions
 
@@ -255,44 +224,16 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 
 ### Cost Management
 
-| Configuration | Samples | API Calls | Time | Est. Cost |
-|--------------|---------|-----------|------|-----------|
-| Quick test | 15 | ~150 | 5-10 min | $1-2 |
-| Medium | 45 | ~1,000 | 20-30 min | $5-10 |
-| Full dataset | 153 | ~4,500 | 45-90 min | $20-50 |
+| Configuration | Optimizers | Samples | API Calls | Time | Est. Cost |
+|--------------|------------|---------|-----------|------|-----------|
+| Quick test | 1 | 15 | ~50 | 2-5 min | $0.50-$1 |
+| Medium | 1 | 45 | ~300 | 8-15 min | $2-$5 |
+| Full single | 1 | 153 | ~1,500 | 15-30 min | $8-$20 |
+| Full all | 3 | 153 | ~4,500 | 45-90 min | $20-$50 |
 
 ## 🆘 Troubleshooting
 
-### Error: "COMET_API_KEY not found"
-- Make sure `.env` file exists with your API keys
-- Check that `python-dotenv` is installed
-- Verify file is in the same directory as `optimize.py`
-
-### Error: "Dataset has only X rows"
-- The CSV should have 153 rows
-- Check that `answer-evaluation.csv` exists and is not corrupted
-- Try reading it manually: `pd.read_csv("answer-evaluation.csv")`
-
-### Optimization is slow
-- This is normal - each optimizer tests many variations
-- Can take 5-15 minutes per optimizer with small sample
-- Reduce `SAMPLE_SIZE` for faster testing (but less accurate results)
-- Increase `N_THREADS` if you have more CPU cores
-
-### Errors about model parameters
-- Ensure you're using a reasoning model (gpt-5-mini)
-- Check that your OpenAI API key has access to the model
-- Try removing model_parameters if model doesn't support reasoning
-
-### High API costs
-- Start with `SAMPLE_SIZE=15` to test
-- Monitor usage in OpenAI dashboard
-- Consider using cheaper models for initial experiments
-
-### Score extraction fails
-- Check that LLM output includes "**Score:** X" format
-- Update patterns in `extract_score_from_text()` if needed
-- Add debug prints to see raw LLM outputs
+Having issues? See **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for detailed solutions to common problems.
 
 ## 📚 Learn More
 
@@ -304,25 +245,9 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 
 ## 🎓 Next Steps
 
-1. **Experiment with configuration**
-   - Try different sample sizes
-   - Adjust number of trials
-   - Test different models
-
-2. **Optimize your own prompts**
-   - Replace the grading rubric with your prompt
-   - Create a dataset for your use case
-   - Define custom metrics
-
-3. **Compare optimizers**
-   - Which works best for your task?
-   - How do results change with more data?
-   - What's the cost/benefit tradeoff?
-
-4. **Use in production**
-   - Deploy the best optimized prompt
-   - Monitor performance over time
-   - Re-optimize periodically with new data
+- **Experiment**: Try different sample sizes, models, and optimizer combinations
+- **Adapt**: Use the patterns in `utils.py` to optimize your own prompts
+- **Production**: Deploy the best prompt and monitor performance over time
 
 ## 🤝 Contributing
 

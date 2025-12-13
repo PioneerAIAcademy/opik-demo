@@ -1,0 +1,4 @@
+[tool.ruff]
+# Ignore E402 (module level import not at top of file) for notebook-style files
+[tool.ruff.lint.per-file-ignores]
+"optimize.py" = ["E402"]
