@@ -340,3 +340,76 @@ def create_timestamped_run_dir(base_dir: str = "runs") -> str:
     os.makedirs(run_dir, exist_ok=True)
     print(f"📁 Created output directory: {run_dir}/")
     return run_dir
+
+
+def save_optimizer_result_to_file(
+    run_dir: str,
+    optimizer_name: str,
+    result,
+    baseline_score: float,
+    elapsed_time: float
+) -> str:
+    """
+    Save optimizer result to a formatted text file.
+
+    This is pure file I/O boilerplate - extracts the result data and writes it
+    to a nicely formatted text file for later inspection.
+
+    Args:
+        run_dir: Directory to save the file in
+        optimizer_name: Name of the optimizer (e.g., "MetaPrompt", "Hierarchical")
+        result: Optimization result object with .score and .prompt attributes
+        baseline_score: Baseline score before optimization
+        elapsed_time: Time taken for optimization in seconds
+
+    Returns:
+        Path to the created output file
+
+    Example:
+        >>> output_path = save_optimizer_result_to_file(
+        ...     run_dir="runs/2025-12-13_10-30-00",
+        ...     optimizer_name="MetaPrompt",
+        ...     result=metaprompt_result,
+        ...     baseline_score=0.75,
+        ...     elapsed_time=300.5
+        ... )
+        >>> print(output_path)
+        runs/2025-12-13_10-30-00/optimized-metaprompt-messages.txt
+
+    Reuse this in your projects:
+        # Save any optimization result with consistent formatting
+        output_file = save_optimizer_result_to_file(
+            run_dir=output_dir,
+            optimizer_name="CustomOptimizer",
+            result=opt_result,
+            baseline_score=baseline,
+            elapsed_time=time_taken
+        )
+    """
+    # Create filename from optimizer name (lowercase, hyphenated)
+    filename = f"optimized-{optimizer_name.lower().replace(' ', '-')}-messages.txt"
+    output_file = os.path.join(run_dir, filename)
+
+    # Write formatted results to file
+    with open(output_file, "w") as f:
+        # Header with optimizer name
+        f.write(f"{optimizer_name} Optimization Results\n")
+        f.write("=" * 80 + "\n\n")
+
+        # Summary metrics
+        f.write(f"Baseline Dev Score: {baseline_score:.4f}\n")
+        f.write(f"Optimized Dev Score: {result.score:.4f}\n")
+        f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
+
+        # Optimized prompt messages
+        f.write("=" * 80 + "\n")
+        f.write("OPTIMIZED PROMPT MESSAGES:\n")
+        f.write("=" * 80 + "\n\n")
+
+        # Write each message in the optimized prompt
+        for msg in result.prompt:
+            f.write(f"Role: {msg.get('role')}\n")
+            f.write(f"Content:\n{msg.get('content')}\n")
+            f.write("-" * 80 + "\n\n")
+
+    return output_file

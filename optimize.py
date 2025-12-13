@@ -74,7 +74,8 @@ from utils import (
     extract_score_from_text,
     load_csv_with_stratified_split,
     load_text_template,
-    create_timestamped_run_dir
+    create_timestamped_run_dir,
+    save_optimizer_result_to_file
 )
 
 # Load environment variables from .env file
@@ -218,8 +219,8 @@ if not args.quiet:
 We use **stratified splitting** to maintain score distribution across ALL splits.
 
 **Three-way split (train/dev/test):**
-- Train (60%): Used for failure analysis and understanding patterns
-- Dev (20%): Used during optimization to score and select best candidates
+- Train (40%): Used for failure analysis and understanding patterns
+- Dev (40%): Used during optimization to score and select best candidates
 - Test (20%): Held-out for final evaluation (NEVER touched during optimization)
 
 Why this matters:
@@ -227,7 +228,7 @@ Why this matters:
 - With dev set: Optimizer can't overfit - must generalize to unseen dev data
 - Test set: Measures true performance on completely unseen data
 
-Example: ~153 samples → 92 train, 31 dev, 30 test
+Example: ~153 samples → 61 train, 61 dev, 31 test
 
 **Why stratification matters:**
 - Maintains score distribution across all three sets
@@ -598,7 +599,7 @@ baseline_dev_score = baseline_optimizer.evaluate_prompt(
 
 elapsed_time = time.time() - start_time
 
-print(f"\n📈 Baseline Scores:")
+print("\n📈 Baseline Scores:")
 print(f"   Train: {baseline_train_score:.4f} ({baseline_train_score*100:.1f}% accuracy)")
 print(f"   Dev:   {baseline_dev_score:.4f} ({baseline_dev_score*100:.1f}% accuracy)")
 print(f"   Evaluation time: {elapsed_time/60:.1f} minutes")
@@ -705,21 +706,13 @@ if 'metaprompt' in enabled_optimizers:
         print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
 
     # %% Save MetaPrompt result
-    output_file = f"{RUN_DIR}/optimized-metaprompt-messages.txt"
-    with open(output_file, "w") as f:
-        f.write("MetaPrompt Optimization Results\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Baseline Dev Score: {baseline_dev_score:.4f}\n")
-        f.write(f"Optimized Dev Score: {metaprompt_result.score:.4f}\n")
-        f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
-        f.write("=" * 80 + "\n")
-        f.write("OPTIMIZED PROMPT MESSAGES:\n")
-        f.write("=" * 80 + "\n\n")
-        for msg in metaprompt_result.prompt:
-            f.write(f"Role: {msg.get('role')}\n")
-            f.write(f"Content:\n{msg.get('content')}\n")
-            f.write("-" * 80 + "\n\n")
-
+    output_file = save_optimizer_result_to_file(
+        run_dir=RUN_DIR,
+        optimizer_name="MetaPrompt",
+        result=metaprompt_result,
+        baseline_score=baseline_dev_score,
+        elapsed_time=elapsed_time
+    )
     print(f"\n💾 Saved optimized prompt to: {output_file}")
 else:
     print("\n⏭️  Skipping MetaPrompt optimizer")
@@ -788,21 +781,13 @@ if 'hierarchical' in enabled_optimizers:
         print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
 
     # %% Save Hierarchical result
-    output_file = f"{RUN_DIR}/optimized-hierarchical-messages.txt"
-    with open(output_file, "w") as f:
-        f.write("Hierarchical Reflective Optimization Results\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Baseline Dev Score: {baseline_dev_score:.4f}\n")
-        f.write(f"Optimized Dev Score: {hierarchical_result.score:.4f}\n")
-        f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
-        f.write("=" * 80 + "\n")
-        f.write("OPTIMIZED PROMPT MESSAGES:\n")
-        f.write("=" * 80 + "\n\n")
-        for msg in hierarchical_result.prompt:
-            f.write(f"Role: {msg.get('role')}\n")
-            f.write(f"Content:\n{msg.get('content')}\n")
-            f.write("-" * 80 + "\n\n")
-
+    output_file = save_optimizer_result_to_file(
+        run_dir=RUN_DIR,
+        optimizer_name="Hierarchical Reflective",
+        result=hierarchical_result,
+        baseline_score=baseline_dev_score,
+        elapsed_time=elapsed_time
+    )
     print(f"\n💾 Saved optimized prompt to: {output_file}")
 else:
     print("\n⏭️  Skipping Hierarchical optimizer")
@@ -867,21 +852,13 @@ if 'fewshot' in enabled_optimizers:
         print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
 
     # %% Save Few-Shot result
-    output_file = f"{RUN_DIR}/optimized-fewshot-messages.txt"
-    with open(output_file, "w") as f:
-        f.write("Few-Shot Bayesian Optimization Results\n")
-        f.write("=" * 80 + "\n\n")
-        f.write(f"Baseline Dev Score: {baseline_dev_score:.4f}\n")
-        f.write(f"Optimized Dev Score: {fewshot_result.score:.4f}\n")
-        f.write(f"Optimization Time: {elapsed_time/60:.1f} minutes\n\n")
-        f.write("=" * 80 + "\n")
-        f.write("OPTIMIZED PROMPT MESSAGES:\n")
-        f.write("=" * 80 + "\n\n")
-        for msg in fewshot_result.prompt:
-            f.write(f"Role: {msg.get('role')}\n")
-            f.write(f"Content:\n{msg.get('content')}\n")
-            f.write("-" * 80 + "\n\n")
-
+    output_file = save_optimizer_result_to_file(
+        run_dir=RUN_DIR,
+        optimizer_name="Few-Shot Bayesian",
+        result=fewshot_result,
+        baseline_score=baseline_dev_score,
+        elapsed_time=elapsed_time
+    )
     print(f"\n💾 Saved optimized prompt to: {output_file}")
 else:
     print("\n⏭️  Skipping Few-Shot optimizer")
@@ -1051,7 +1028,7 @@ if len(test_scores) > 0:
 
     # Check for overfitting
     if winner_train_score > winner_test_score + 0.02:
-        print(f"   ⚠️  WARNING: Possible overfitting detected!")
+        print("   ⚠️  WARNING: Possible overfitting detected!")
         print(f"   Train score is {winner_train_score - winner_test_score:.4f} higher than test")
 else:
     winner = "N/A"
