@@ -57,7 +57,7 @@ N_THREADS = 4     # Parallel threads for speed
 ```
 
 ⚠️  **Important:** Start with `SAMPLE_SIZE=30` and `N_TRIALS=1`
-for your first run to verify everything works! Full dataset optimization with 5 trials can take several hours and cost $20-50 in API calls.
+for your first run to verify everything works! Full dataset optimization with 5 trials can take over and hour and cost several dollars in API calls if using OpenAI.
 
 ### 4. Run the Workshop
 
@@ -92,7 +92,7 @@ python optimize.py --optimizers metaprompt,hierarchical
 
 ### Full Test
 ```bash
-# Run all three optimizers with full dataset (several hours)
+# Run all three optimizers with full dataset (over an hour)
 python optimize.py
 ```
 
