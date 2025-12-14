@@ -38,7 +38,7 @@ pip install -r requirements.txt
 Create a `.env` file in the project directory:
 
 ```env
-COMET_API_KEY=your_comet_key_here
+OPIK_API_KEY=your_comet_key_here
 OPENAI_API_KEY=your_openai_key_here
 # or
 GEMINI_API_KEY=your_gemini_key_here
@@ -102,10 +102,11 @@ python optimize.py
 |----------|---------|-------------|
 | `--sample-size N` | None | Number of samples (None = full) |
 | `--n-trials N` | 5 | Optimization trials per optimizer |
-| `--n-threads N` | 8 | Parallel threads for evaluation |
+| `--n-threads N` | 4 | Parallel threads for evaluation |
 | `--model MODEL` | openai/responses/gpt-5-mini | LLM model (LiteLLM format) |
 | `--optimizers LIST` | all | Comma-separated optimizer list |
 | `--output-dir DIR` | runs | Output directory |
+| `--split-ratio RATIO` | 40/40/20 | Train/Dev/Test split ratio |
 | `--reasoning-effort LEVEL` | low | Reasoning effort (low/medium/high/xhigh) |
 | `--verbosity LEVEL` | low | Output verbosity (low/medium/high) |
 | `--max-output-tokens N` | 65536 | Max output tokens for Responses API |
@@ -132,7 +133,8 @@ opik-demo/
         ├── optimized-metaprompt-messages.txt
         ├── optimized-hierarchical-messages.txt
         ├── optimized-fewshot-messages.txt
-        └── comparison_table.txt
+        ├── comparison_table.txt
+        └── results_summary.json
 ```
 
 ## 🧪 Run Tests
@@ -176,6 +178,7 @@ All functions in `utils.py` can be copied to your own projects:
 - `load_csv_with_stratified_split()` - Load and split datasets
 - `load_text_template()` - Load text templates
 - `create_timestamped_run_dir()` - Create timestamped output directories
+- `save_optimizer_result_to_file()` - Save optimization results to formatted text files
 
 See the docstrings for usage examples!
 

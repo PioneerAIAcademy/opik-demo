@@ -29,7 +29,7 @@ CONFIGURATION - Default values (can be overridden via CLI arguments)
 # Default configuration values
 DEFAULT_SAMPLE_SIZE = None  # None = use full dataset (~153 rows → 102 train, 51 test)
 DEFAULT_N_TRIALS = 5        # Number of optimization rounds per optimizer
-DEFAULT_N_THREADS = 8       # Parallel threads for evaluation
+DEFAULT_N_THREADS = 4       # Parallel threads for evaluation
 
 # Model in LiteLLM format: "provider/endpoint/model"
 # Examples: "openai/gpt-4o", "anthropic/claude-3-5-sonnet-20241022"
@@ -122,7 +122,8 @@ args = parse_args()
 model_params = {
     "reasoning_effort": args.reasoning_effort,
     "verbosity": args.verbosity,
-    "max_output_tokens": args.max_output_tokens
+    "max_output_tokens": args.max_output_tokens,
+    "num_retries": 5  # Retry on transient API errors (connection drops, rate limits)
 }
 
 # Validate configuration values
@@ -158,11 +159,11 @@ if not args.quiet:
         print("=" * 80)
 
 # Verify API keys are present
-if not os.getenv("COMET_API_KEY"):
-    print("❌ ERROR: COMET_API_KEY not found")
+if not os.getenv("OPIK_API_KEY"):
+    print("❌ ERROR: OPIK_API_KEY not found")
     print("\nHow to fix:")
     print("1. Create a .env file in this directory")
-    print("2. Add: COMET_API_KEY=your_key_here")
+    print("2. Add: OPIK_API_KEY=your_key_here")
     print("3. Get a key at: https://www.comet.com/signup")
     sys.exit(1)
 
@@ -597,12 +598,12 @@ baseline_dev_score = baseline_optimizer.evaluate_prompt(
     n_threads=args.n_threads
 )
 
-elapsed_time = time.time() - start_time
+baseline_elapsed_time = time.time() - start_time
 
 print("\n📈 Baseline Scores:")
 print(f"   Train: {baseline_train_score:.4f} ({baseline_train_score*100:.1f}% accuracy)")
 print(f"   Dev:   {baseline_dev_score:.4f} ({baseline_dev_score*100:.1f}% accuracy)")
-print(f"   Evaluation time: {elapsed_time/60:.1f} minutes")
+print(f"   Evaluation time: {baseline_elapsed_time/60:.1f} minutes")
 
 # Validate baseline scores are reasonable
 if baseline_dev_score < 0.0 or baseline_dev_score > 1.0:
@@ -624,7 +625,7 @@ if baseline_dev_score == 0.0:
 with open(f"{RUN_DIR}/baseline_score.txt", "w") as f:
     f.write(f"Baseline Train Score: {baseline_train_score:.4f} ({baseline_train_score*100:.1f}% accuracy)\n")
     f.write(f"Baseline Dev Score: {baseline_dev_score:.4f} ({baseline_dev_score*100:.1f}% accuracy)\n")
-    f.write(f"Evaluation time: {elapsed_time/60:.1f} minutes\n")
+    f.write(f"Evaluation time: {baseline_elapsed_time/60:.1f} minutes\n")
 
 # %% [markdown]
 """
@@ -686,7 +687,7 @@ if 'metaprompt' in enabled_optimizers:
         n_trials=args.n_trials
     )
 
-    elapsed_time = time.time() - start_time
+    metaprompt_elapsed_time = time.time() - start_time
 
     # %% Display MetaPrompt results
     print("\n" + "=" * 80)
@@ -698,7 +699,7 @@ if 'metaprompt' in enabled_optimizers:
     print("\n📊 Summary:")
     print(f"   Baseline Dev Score:  {baseline_dev_score:.4f}")
     print(f"   Optimized Dev Score: {metaprompt_result.score:.4f}")
-    print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
+    print(f"   Optimization time: {metaprompt_elapsed_time/60:.1f} minutes")
 
     if metaprompt_result.initial_score is not None:
         improvement = metaprompt_result.score - metaprompt_result.initial_score
@@ -711,10 +712,11 @@ if 'metaprompt' in enabled_optimizers:
         optimizer_name="MetaPrompt",
         result=metaprompt_result,
         baseline_score=baseline_dev_score,
-        elapsed_time=elapsed_time
+        elapsed_time=metaprompt_elapsed_time
     )
     print(f"\n💾 Saved optimized prompt to: {output_file}")
 else:
+    metaprompt_elapsed_time = None
     print("\n⏭️  Skipping MetaPrompt optimizer")
 
 # %% [markdown]
@@ -761,7 +763,7 @@ if 'hierarchical' in enabled_optimizers:
         n_trials=args.n_trials
     )
 
-    elapsed_time = time.time() - start_time
+    hierarchical_elapsed_time = time.time() - start_time
 
     # %% Display Hierarchical results
     print("\n" + "=" * 80)
@@ -773,7 +775,7 @@ if 'hierarchical' in enabled_optimizers:
     print("\n📊 Summary:")
     print(f"   Baseline Dev Score:  {baseline_dev_score:.4f}")
     print(f"   Optimized Dev Score: {hierarchical_result.score:.4f}")
-    print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
+    print(f"   Optimization time: {hierarchical_elapsed_time/60:.1f} minutes")
 
     if hierarchical_result.initial_score is not None:
         improvement = hierarchical_result.score - hierarchical_result.initial_score
@@ -786,10 +788,11 @@ if 'hierarchical' in enabled_optimizers:
         optimizer_name="Hierarchical Reflective",
         result=hierarchical_result,
         baseline_score=baseline_dev_score,
-        elapsed_time=elapsed_time
+        elapsed_time=hierarchical_elapsed_time
     )
     print(f"\n💾 Saved optimized prompt to: {output_file}")
 else:
+    hierarchical_elapsed_time = None
     print("\n⏭️  Skipping Hierarchical optimizer")
 
 # %% [markdown]
@@ -832,7 +835,7 @@ if 'fewshot' in enabled_optimizers:
         max_trials=args.n_trials
     )
 
-    elapsed_time = time.time() - start_time
+    fewshot_elapsed_time = time.time() - start_time
 
     # %% Display Few-Shot results
     print("\n" + "=" * 80)
@@ -844,7 +847,7 @@ if 'fewshot' in enabled_optimizers:
     print("\n📊 Summary:")
     print(f"   Baseline Dev Score:  {baseline_dev_score:.4f}")
     print(f"   Optimized Dev Score: {fewshot_result.score:.4f}")
-    print(f"   Optimization time: {elapsed_time/60:.1f} minutes")
+    print(f"   Optimization time: {fewshot_elapsed_time/60:.1f} minutes")
 
     if fewshot_result.initial_score is not None:
         improvement = fewshot_result.score - fewshot_result.initial_score
@@ -857,10 +860,11 @@ if 'fewshot' in enabled_optimizers:
         optimizer_name="Few-Shot Bayesian",
         result=fewshot_result,
         baseline_score=baseline_dev_score,
-        elapsed_time=elapsed_time
+        elapsed_time=fewshot_elapsed_time
     )
     print(f"\n💾 Saved optimized prompt to: {output_file}")
 else:
+    fewshot_elapsed_time = None
     print("\n⏭️  Skipping Few-Shot optimizer")
 
 # %% [markdown]
@@ -877,6 +881,8 @@ print("🧪 TEST SET EVALUATION")
 print("=" * 80)
 print("Evaluating optimized prompts on held-out test data...")
 print()
+
+test_eval_start_time = time.time()
 
 # Evaluate baseline on test set
 print("Evaluating baseline on test set...")
@@ -942,6 +948,9 @@ if fewshot_result is not None:
     )
     print(f"✅ FewShot test score: {fewshot_test_score:.4f}")
 
+test_eval_elapsed_time = time.time() - test_eval_start_time
+print(f"\n⏱️  Test evaluation time: {test_eval_elapsed_time/60:.1f} minutes")
+
 # %% [markdown]
 """
 ---
@@ -963,45 +972,45 @@ def calc_improvement(result, baseline):
 # Build results list dynamically based on what ran
 results_data = [{
     "Optimizer": "Baseline",
-    "Train Score": baseline_dev_score,
+    "Dev Score": baseline_dev_score,
     "Test Score": baseline_test_score,
-    "Train Improvement": "—",
+    "Dev Improvement": "—",
     "Test Improvement": "—",
     "Output File": "—"
 }]
 
 if metaprompt_result is not None:
-    train_imp = calc_improvement(metaprompt_result, baseline_dev_score)
+    dev_imp = calc_improvement(metaprompt_result, baseline_dev_score)
     test_imp = ((metaprompt_test_score - baseline_test_score) / baseline_test_score) * 100 if baseline_test_score != 0 else 0.0
     results_data.append({
         "Optimizer": "MetaPrompt",
-        "Train Score": metaprompt_result.score,
+        "Dev Score": metaprompt_result.score,
         "Test Score": metaprompt_test_score,
-        "Train Improvement": f"{train_imp:+.1f}%",
+        "Dev Improvement": f"{dev_imp:+.1f}%",
         "Test Improvement": f"{test_imp:+.1f}%",
         "Output File": "optimized-metaprompt-messages.txt"
     })
 
 if hierarchical_result is not None:
-    train_imp = calc_improvement(hierarchical_result, baseline_dev_score)
+    dev_imp = calc_improvement(hierarchical_result, baseline_dev_score)
     test_imp = ((hierarchical_test_score - baseline_test_score) / baseline_test_score) * 100 if baseline_test_score != 0 else 0.0
     results_data.append({
         "Optimizer": "Hierarchical",
-        "Train Score": hierarchical_result.score,
+        "Dev Score": hierarchical_result.score,
         "Test Score": hierarchical_test_score,
-        "Train Improvement": f"{train_imp:+.1f}%",
+        "Dev Improvement": f"{dev_imp:+.1f}%",
         "Test Improvement": f"{test_imp:+.1f}%",
         "Output File": "optimized-hierarchical-messages.txt"
     })
 
 if fewshot_result is not None:
-    train_imp = calc_improvement(fewshot_result, baseline_dev_score)
+    dev_imp = calc_improvement(fewshot_result, baseline_dev_score)
     test_imp = ((fewshot_test_score - baseline_test_score) / baseline_test_score) * 100 if baseline_test_score != 0 else 0.0
     results_data.append({
         "Optimizer": "Few-Shot",
-        "Train Score": fewshot_result.score,
+        "Dev Score": fewshot_result.score,
         "Test Score": fewshot_test_score,
-        "Train Improvement": f"{train_imp:+.1f}%",
+        "Dev Improvement": f"{dev_imp:+.1f}%",
         "Test Improvement": f"{test_imp:+.1f}%",
         "Output File": "optimized-fewshot-messages.txt"
     })
@@ -1009,7 +1018,7 @@ if fewshot_result is not None:
 results_df = pd.DataFrame(results_data)
 
 print("\n" + "=" * 80)
-print("📊 FINAL RESULTS COMPARISON (TRAIN vs TEST)")
+print("📊 FINAL RESULTS COMPARISON (DEV vs TEST)")
 print("=" * 80)
 print()
 print(results_df.to_string(index=False))
@@ -1020,16 +1029,16 @@ if len(test_scores) > 0:
     best_idx = test_scores.idxmax()
     winner = results_df.loc[best_idx, "Optimizer"]
     winner_test_score = results_df.loc[best_idx, "Test Score"]
-    winner_train_score = results_df.loc[best_idx, "Train Score"]
+    winner_dev_score = results_df.loc[best_idx, "Dev Score"]
 
     print(f"\n🏆 WINNER (by test score): {winner}")
     print(f"   Test Score: {winner_test_score:.4f}")
-    print(f"   Train Score: {winner_train_score:.4f}")
+    print(f"   Dev Score: {winner_dev_score:.4f}")
 
     # Check for overfitting
-    if winner_train_score > winner_test_score + 0.02:
+    if winner_dev_score > winner_test_score + 0.02:
         print("   ⚠️  WARNING: Possible overfitting detected!")
-        print(f"   Train score is {winner_train_score - winner_test_score:.4f} higher than test")
+        print(f"   Dev score is {winner_dev_score - winner_test_score:.4f} higher than test")
 else:
     winner = "N/A"
     winner_test_score = 0.0
@@ -1037,13 +1046,13 @@ print(f"\n📁 All results saved to: {RUN_DIR}/")
 
 # Save comparison table
 with open(f"{RUN_DIR}/comparison_table.txt", "w") as f:
-    f.write("FINAL RESULTS COMPARISON (TRAIN vs TEST)\n")
+    f.write("FINAL RESULTS COMPARISON (DEV vs TEST)\n")
     f.write("=" * 80 + "\n\n")
     f.write(results_df.to_string(index=False))
     if len(test_scores) > 0:
         f.write(f"\n\n🏆 WINNER (by test score): {winner}")
         f.write(f"\n   Test Score: {winner_test_score:.4f}")
-        f.write(f"\n   Train Score: {winner_train_score:.4f}\n")
+        f.write(f"\n   Dev Score: {winner_dev_score:.4f}\n")
 
 # %% Save JSON summary (always created for easy parsing/testing)
 summary = {
@@ -1056,7 +1065,7 @@ summary = {
         "enabled_optimizers": list(enabled_optimizers)
     },
     "baseline": {
-        "train_score": float(baseline_dev_score),
+        "dev_score": float(baseline_dev_score),
         "test_score": float(baseline_test_score)
     },
     "optimizers": {},
@@ -1072,12 +1081,12 @@ optimizer_map = [
 
 for name, result_obj, test_score in optimizer_map:
     if result_obj is not None and test_score is not None:
-        train_imp = ((result_obj.score - baseline_dev_score) / baseline_dev_score) * 100 if baseline_dev_score != 0 else 0.0
+        dev_imp = ((result_obj.score - baseline_dev_score) / baseline_dev_score) * 100 if baseline_dev_score != 0 else 0.0
         test_imp = ((test_score - baseline_test_score) / baseline_test_score) * 100 if baseline_test_score != 0 else 0.0
         summary["optimizers"][name] = {
-            "train_score": float(result_obj.score),
+            "dev_score": float(result_obj.score),
             "test_score": float(test_score),
-            "train_improvement_pct": float(train_imp),
+            "dev_improvement_pct": float(dev_imp),
             "test_improvement_pct": float(test_imp)
         }
 
@@ -1087,7 +1096,7 @@ if summary["optimizers"]:
                      key=lambda k: summary["optimizers"][k]["test_score"])
     summary["winner"] = {
         "name": winner_name,
-        "train_score": summary["optimizers"][winner_name]["train_score"],
+        "dev_score": summary["optimizers"][winner_name]["dev_score"],
         "test_score": summary["optimizers"][winner_name]["test_score"]
     }
 
@@ -1098,6 +1107,52 @@ with open(json_path, "w") as f:
 
 if not args.quiet:
     print(f"\n💾 JSON summary saved to: {json_path}")
+
+# %% Timings table
+# Build timings data
+timings_data = [{"Stage": "Baseline Evaluation", "Time (min)": f"{baseline_elapsed_time/60:.1f}"}]
+
+if metaprompt_elapsed_time is not None:
+    timings_data.append({"Stage": "MetaPrompt Optimizer", "Time (min)": f"{metaprompt_elapsed_time/60:.1f}"})
+if hierarchical_elapsed_time is not None:
+    timings_data.append({"Stage": "Hierarchical Optimizer", "Time (min)": f"{hierarchical_elapsed_time/60:.1f}"})
+if fewshot_elapsed_time is not None:
+    timings_data.append({"Stage": "Few-Shot Optimizer", "Time (min)": f"{fewshot_elapsed_time/60:.1f}"})
+
+timings_data.append({"Stage": "Test Set Evaluation", "Time (min)": f"{test_eval_elapsed_time/60:.1f}"})
+
+# Calculate total time
+total_time = baseline_elapsed_time + test_eval_elapsed_time
+if metaprompt_elapsed_time is not None:
+    total_time += metaprompt_elapsed_time
+if hierarchical_elapsed_time is not None:
+    total_time += hierarchical_elapsed_time
+if fewshot_elapsed_time is not None:
+    total_time += fewshot_elapsed_time
+
+timings_data.append({"Stage": "TOTAL", "Time (min)": f"{total_time/60:.1f}"})
+
+timings_df = pd.DataFrame(timings_data)
+
+print("\n" + "=" * 80)
+print("⏱️  TIMINGS")
+print("=" * 80)
+print()
+print(timings_df.to_string(index=False))
+
+# Save timings to JSON summary
+summary["timings"] = {
+    "baseline_minutes": round(baseline_elapsed_time/60, 1),
+    "metaprompt_minutes": round(metaprompt_elapsed_time/60, 1) if metaprompt_elapsed_time else None,
+    "hierarchical_minutes": round(hierarchical_elapsed_time/60, 1) if hierarchical_elapsed_time else None,
+    "fewshot_minutes": round(fewshot_elapsed_time/60, 1) if fewshot_elapsed_time else None,
+    "test_eval_minutes": round(test_eval_elapsed_time/60, 1),
+    "total_minutes": round(total_time/60, 1)
+}
+
+# Re-save JSON with timings
+with open(json_path, "w") as f:
+    json.dump(summary, f, indent=2)
 
 # %% [markdown]
 """

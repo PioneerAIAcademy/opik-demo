@@ -5,13 +5,14 @@ openai>=2.11.0
 litellm>=1.80.8
 python-dotenv>=1.2.1
 
+# Required for LiteLLM Responses API (reasoning models like GPT-5)
+fastapi
+orjson
+
 # Data processing
 pandas>=2.3.3
 scikit-learn>=1.8.0
 numpy>=2.3.5
-
-# For rich terminal output (used by Opik)
-rich>=14.2.0
 
 # Testing
 pytest>=9.0.2
