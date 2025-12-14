@@ -53,7 +53,7 @@ Edit the configuration section at the top of `optimize.py`:
 SAMPLE_SIZE = 30  # Start wit 30 for quick testing (12 train, 12 dev, 6 test)
                    # Set to None for full dataset
 N_TRIALS = 1      # Number of optimization rounds - set to 5 for a real run
-N_THREADS = 8     # Parallel threads for speed
+N_THREADS = 4     # Parallel threads for speed
 ```
 
 ⚠️  **Important:** Start with `SAMPLE_SIZE=30` and `N_TRIALS=1`
