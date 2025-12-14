@@ -14,7 +14,7 @@ Welcome to the prompt optimization workshop! Learn how to use Opik's agent optim
 
 - Python 3.8 or higher
 - Basic Python knowledge
-- OpenAI API key ([Get one here](https://platform.openai.com/api-keys))
+- OpenAI API key or Gemini API key 
 - Comet API key ([Free signup](https://www.comet.com/signup))
 
 ## 🚀 Quick Start
@@ -23,10 +23,11 @@ Welcome to the prompt optimization workshop! Learn how to use Opik's agent optim
 
 ```bash
 # Navigate to project directory
-cd /home/dallan/pioneeraiacademy/opik-demo
+cd opik-demo
 
-# Create virtual environment
+# Create virtual environment and activate it
 python -m venv .venv
+source .venv/bin/activate
 
 # Install packages
 pip install -r requirements.txt
@@ -39,6 +40,8 @@ Create a `.env` file in the project directory:
 ```env
 COMET_API_KEY=your_comet_key_here
 OPENAI_API_KEY=your_openai_key_here
+# or
+GEMINI_API_KEY=your_gemini_key_here
 ```
 
 ### 3. Configure Your Run
@@ -47,13 +50,14 @@ Edit the configuration section at the top of `optimize.py`:
 
 ```python
 # Configuration
-SAMPLE_SIZE = 15  # Start with 15 for quick testing (10 train, 5 test)
-                   # Set to None for full dataset (102 train, 51 test)
-N_TRIALS = 3      # Number of optimization rounds
+SAMPLE_SIZE = 30  # Start wit 30 for quick testing (12 train, 12 dev, 6 test)
+                   # Set to None for full dataset
+N_TRIALS = 1      # Number of optimization rounds - set to 5 for a real run
 N_THREADS = 8     # Parallel threads for speed
 ```
 
-⚠️  **Important:** Start with `SAMPLE_SIZE=15` for your first run to verify everything works! Full dataset optimization can take 45-90 minutes and cost $20-50 in API calls.
+⚠️  **Important:** Start with `SAMPLE_SIZE=30` and `N_TRIALS=1`
+for your first run to verify everything works! Full dataset optimization with 5 trials can take several hours and cost $20-50 in API calls.
 
 ### 4. Run the Workshop
 
@@ -70,17 +74,17 @@ python optimize.py
 
 ## 🎛️ CLI Usage
 
-`optimize.py` now supports command-line arguments for flexible configuration:
+`optimize.py` supports command-line arguments for flexible configuration:
 
 ### Quick Test (Recommended for first run)
 ```bash
-python optimize.py --sample-size 10 --n-trials 1
+python optimize.py --sample-size 30 --n-trials 1
 ```
 
 ### Run Specific Optimizers (Fast!)
 ```bash
 # Run only MetaPrompt (~5-10 min instead of 15-30 min)
-python optimize.py --sample-size 15 --optimizers metaprompt
+python optimize.py --sample-size 30 --optimizers metaprompt
 
 # Run two optimizers
 python optimize.py --optimizers metaprompt,hierarchical
@@ -88,16 +92,16 @@ python optimize.py --optimizers metaprompt,hierarchical
 
 ### Full Test
 ```bash
-# Run all three optimizers with full dataset (~45-90 min)
-python optimize.py --sample-size None
+# Run all three optimizers with full dataset (several hours)
+python optimize.py
 ```
 
 ### CLI Arguments
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--sample-size N` | None | Number of samples (None = full ~153) |
-| `--n-trials N` | 3 | Optimization trials per optimizer |
+| `--sample-size N` | None | Number of samples (None = full) |
+| `--n-trials N` | 5 | Optimization trials per optimizer |
 | `--n-threads N` | 8 | Parallel threads for evaluation |
 | `--model MODEL` | openai/responses/gpt-5-mini | LLM model (LiteLLM format) |
 | `--optimizers LIST` | all | Comma-separated optimizer list |
@@ -159,7 +163,7 @@ pytest -m "not e2e" -v
 
 ## 📖 Understanding the Code
 
-- **Dataset**: 153 examples with human scores (1-5), split 2/3 train, 1/3 test with stratification
+- **Dataset**: 153 examples with human scores (1-5), split 40% train, 40% dev, 20% test with stratification
 - **Metric**: Custom `ScoreAccuracyMetric` compares LLM scores to human scores (formula: `1 - abs(diff) / 4.0`)
 - **Optimizers**: MetaPrompt (iterative critique), Hierarchical (failure analysis), Few-Shot (Bayesian search)
 - **Pattern**: All optimizers follow: create → evaluate baseline → optimize → display results
@@ -226,10 +230,10 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 
 | Configuration | Optimizers | Samples | API Calls | Time | Est. Cost |
 |--------------|------------|---------|-----------|------|-----------|
-| Quick test | 1 | 15 | ~50 | 2-5 min | $0.50-$1 |
+| Quick test | 1 | 30 | ~50 | 2-5 min | $0.50-$1 |
 | Medium | 1 | 45 | ~300 | 8-15 min | $2-$5 |
-| Full single | 1 | 153 | ~1,500 | 15-30 min | $8-$20 |
-| Full all | 3 | 153 | ~4,500 | 45-90 min | $20-$50 |
+| Full single | 1 | None | ~1,500 | 15-30 min | $8-$20 |
+| Full all | 3 | None | ~4,500 | 45-90 min | $20-$50 |
 
 ## 🆘 Troubleshooting
 
@@ -256,10 +260,6 @@ This is an educational project for Pioneer AI Academy students. Feel free to:
 - Suggest improvements
 - Share your results
 - Adapt for your own projects
-
-## 📄 License
-
-This workshop material is for educational purposes. The reusable utility functions in `utils.py` are free to use in your own projects.
 
 ---
 
