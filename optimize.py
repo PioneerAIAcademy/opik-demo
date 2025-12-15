@@ -13,12 +13,10 @@ Welcome! This notebook teaches you how to optimize prompts using Opik's agent op
 6. How to compare and analyze results
 
 **Prerequisites:**
-- Python 3.8+
+- Python 3.12+
 - OpenAI API key
 - Comet API key (free at comet.com)
 - Basic understanding of prompt engineering
-
-**Estimated time:** 45-90 minutes (most time is spent waiting for optimizations to run)
 """
 
 # %% Configuration

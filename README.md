@@ -12,9 +12,9 @@ Welcome to the prompt optimization workshop! Learn how to use Opik's agent optim
 
 ## 📚 Prerequisites
 
-- Python 3.8 or higher
+- Python 3.12 or higher
 - Basic Python knowledge
-- OpenAI API key or Gemini API key 
+- OpenAI API key or Gemini API key
 - Comet API key ([Free signup](https://www.comet.com/signup))
 
 ## 🚀 Quick Start
@@ -56,18 +56,20 @@ N_TRIALS = 1      # Number of optimization rounds (default: 10)
 N_THREADS = 4     # Parallel threads for speed
 ```
 
-⚠️  **Important:** Start with `SAMPLE_SIZE=30` and `N_TRIALS=1`
+⚠️ **Important:** Start with `SAMPLE_SIZE=30` and `N_TRIALS=1`
 for your first run to verify everything works! Full dataset optimization with all 5 optimizers can take 1-2 hours.
 
 ### 4. Run the Workshop
 
 **Option A: Interactive (Recommended)**
 Open `optimize.py` in VS Code and run cells interactively (Shift+Enter):
+
 - Run cells one at a time to understand each step
 - Perfect for learning and experimentation
 
 **Option B: Full Script**
 Run the entire script from command line:
+
 ```bash
 python optimize.py
 ```
@@ -77,11 +79,13 @@ python optimize.py
 `optimize.py` supports command-line arguments for flexible configuration:
 
 ### Quick Test (Recommended for first run)
+
 ```bash
 python optimize.py --sample-size 30 --n-trials 1
 ```
 
 ### Run Specific Optimizers (Fast!)
+
 ```bash
 # Run only MetaPrompt (~5-10 min instead of 15-30 min)
 python optimize.py --sample-size 30 --optimizers metaprompt
@@ -91,6 +95,7 @@ python optimize.py --optimizers metaprompt,hierarchical
 ```
 
 ### Full Test
+
 ```bash
 # Run all five optimizers with full dataset (several hours)
 python optimize.py
@@ -98,19 +103,19 @@ python optimize.py
 
 ### CLI Arguments
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--sample-size N` | None | Number of samples (None = full) |
-| `--n-trials N` | 10 | Optimization trials per optimizer |
-| `--n-threads N` | 4 | Parallel threads for evaluation |
-| `--model MODEL` | openai/responses/gpt-5-mini | LLM model (LiteLLM format) |
-| `--optimizers LIST` | all | Comma-separated optimizer list |
-| `--output-dir DIR` | runs | Output directory |
-| `--split-ratio RATIO` | 40/40/20 | Train/Dev/Test split ratio |
-| `--reasoning-effort LEVEL` | low | Reasoning effort (low/medium/high/xhigh) |
-| `--verbosity LEVEL` | low | Output verbosity (low/medium/high) |
-| `--max-output-tokens N` | 65536 | Max output tokens for Responses API |
-| `--quiet` | False | Suppress verbose output |
+| Argument                   | Default                     | Description                              |
+| -------------------------- | --------------------------- | ---------------------------------------- |
+| `--sample-size N`          | None                        | Number of samples (None = full)          |
+| `--n-trials N`             | 10                          | Optimization trials per optimizer        |
+| `--n-threads N`            | 4                           | Parallel threads for evaluation          |
+| `--model MODEL`            | openai/responses/gpt-5-mini | LLM model (LiteLLM format)               |
+| `--optimizers LIST`        | all                         | Comma-separated optimizer list           |
+| `--output-dir DIR`         | runs                        | Output directory                         |
+| `--split-ratio RATIO`      | 40/40/20                    | Train/Dev/Test split ratio               |
+| `--reasoning-effort LEVEL` | low                         | Reasoning effort (low/medium/high/xhigh) |
+| `--verbosity LEVEL`        | low                         | Output verbosity (low/medium/high)       |
+| `--max-output-tokens N`    | 65536                       | Max output tokens for Responses API      |
+| `--quiet`                  | False                       | Suppress verbose output                  |
 
 **Note**: JSON summary (`results_summary.json`) is automatically created in every run for easy verification.
 
@@ -143,6 +148,7 @@ opik-demo/
 ## 🧪 Run Tests
 
 ### Unit Tests
+
 Verify utilities work correctly:
 
 ```bash
@@ -154,6 +160,7 @@ pytest test_utils.py::TestScoreExtraction -v
 ```
 
 ### End-to-End Test
+
 Test the full optimize.py script with real API calls:
 
 ```bash
@@ -192,6 +199,7 @@ After running, you'll get:
 ### Output Files
 
 All outputs are saved in `runs/YYYY-MM-DD_HH-MM-SS/`:
+
 - `baseline_score.txt` - Initial prompt performance
 - `optimized-metaprompt-messages.txt` - MetaPrompt results
 - `optimized-hierarchical-messages.txt` - Hierarchical results
@@ -217,6 +225,7 @@ Evolutionary   0.79   +21.5%       optimized-evolutionary-messages.txt
 ### Opik Dashboard
 
 View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
+
 - Trace logs for each evaluation
 - Score trends over optimization rounds
 - Prompt evolution history
@@ -225,12 +234,14 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 ## 💡 Best Practices
 
 ### For Learning
+
 1. **Start small**: Use `SAMPLE_SIZE=30` for quick iterations
 2. **Run cells interactively**: Understand each step before proceeding
 3. **Examine outputs**: Look at optimized prompts to see what changed
 4. **Compare metrics**: Try different scoring approaches
 
 ### For Production
+
 1. **Use full dataset**: Set `SAMPLE_SIZE=None` for final optimization
 2. **Increase trials**: Set `N_TRIALS=10` or higher for better results
 3. **Test on holdout set**: Evaluate final prompt on `test_dataset`
@@ -238,12 +249,12 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 
 ### Time Estimates
 
-| Configuration | Optimizers | Samples | Time |
-|--------------|------------|---------|------|
-| Quick test | 1 | 30 | 2-5 min |
-| Medium | 1 | 45 | 8-15 min |
-| Full single | 1 | None | 15-30 min |
-| Full all | 5 | None | 1-2 hours |
+| Configuration | Optimizers | Samples | Time      |
+| ------------- | ---------- | ------- | --------- |
+| Quick test    | 1          | 30      | 2-5 min   |
+| Medium        | 1          | 45      | 8-15 min  |
+| Full single   | 1          | None    | 15-30 min |
+| Full all      | 5          | None    | 1-2 hours |
 
 **Note:** API costs vary by model. With `gpt-5-mini` (default), even full runs typically cost under $2.
 
@@ -300,6 +311,7 @@ evolutionary_model_params = {k: v for k, v in model_params.items() if k != "max_
 ## 🤝 Contributing
 
 This is an educational project for Pioneer AI Academy students. Feel free to:
+
 - Ask questions about the code
 - Suggest improvements
 - Share your results
