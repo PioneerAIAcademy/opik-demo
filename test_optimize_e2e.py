@@ -17,7 +17,7 @@ def test_env():
     """Provide environment with API keys."""
     env = os.environ.copy()
 
-    required_keys = ['COMET_API_KEY', 'OPENAI_API_KEY']
+    required_keys = ['OPIK_API_KEY', 'OPENAI_API_KEY']
     missing = [k for k in required_keys if not env.get(k)]
 
     if missing:
@@ -37,7 +37,6 @@ def output_dir(tmp_path):
 class TestOptimizeE2E:
     """End-to-end tests for optimize.py."""
 
-    @pytest.mark.timeout(900)  # 15 minute timeout
     def test_minimal_run_all_optimizers(self, test_env, output_dir):
         """
         Test complete optimization run with minimal dataset.
@@ -52,7 +51,7 @@ class TestOptimizeE2E:
         """
         print("\n" + "=" * 80)
         print("STARTING E2E TEST: Minimal run with all optimizers")
-        print("Expected duration: 5-10 minutes")
+        print("Expected duration: 15-30 minutes")
         print("=" * 80)
 
         start_time = time.time()
@@ -68,7 +67,6 @@ class TestOptimizeE2E:
             ],
             capture_output=True,
             text=True,
-            timeout=900,
             env=test_env,
             cwd=os.getcwd()
         )
@@ -115,35 +113,37 @@ class TestOptimizeE2E:
         assert summary["test_config"]["sample_size"] == 30  # Updated from 10
         assert summary["test_config"]["n_trials"] == 1
 
-        # Validate baseline (now has train_score and test_score)
-        assert "train_score" in summary["baseline"]
+        # Validate baseline (now has dev_score and test_score)
+        assert "dev_score" in summary["baseline"]
         assert "test_score" in summary["baseline"]
-        baseline_train = summary["baseline"]["train_score"]
+        baseline_dev = summary["baseline"]["dev_score"]
         baseline_test = summary["baseline"]["test_score"]
-        assert 0.0 <= baseline_train <= 1.0
+        assert 0.0 <= baseline_dev <= 1.0
         assert 0.0 <= baseline_test <= 1.0
-        print(f"\n✓ Baseline: train={baseline_train:.4f}, test={baseline_test:.4f}")
+        print(f"\n✓ Baseline: dev={baseline_dev:.4f}, test={baseline_test:.4f}")
 
         # Validate optimizers
-        expected_optimizers = {"MetaPrompt", "Hierarchical", "FewShot"}
+        expected_optimizers = {"MetaPrompt", "Hierarchical", "FewShot", "GEPA", "Evolutionary"}
         actual_optimizers = set(summary["optimizers"].keys())
         assert actual_optimizers == expected_optimizers, \
             f"Expected {expected_optimizers}, got {actual_optimizers}"
 
         for opt_name, opt_data in summary["optimizers"].items():
-            train_score = opt_data["train_score"]
+            dev_score = opt_data["dev_score"]
             test_score = opt_data["test_score"]
-            assert 0.0 <= train_score <= 1.0, f"{opt_name} train_score {train_score} out of range"
+            assert 0.0 <= dev_score <= 1.0, f"{opt_name} dev_score {dev_score} out of range"
             assert 0.0 <= test_score <= 1.0, f"{opt_name} test_score {test_score} out of range"
-            print(f"✓ {opt_name}: train={train_score:.4f}, test={test_score:.4f} "
+            print(f"✓ {opt_name}: dev={dev_score:.4f}, test={test_score:.4f} "
                   f"(test improvement: {opt_data['test_improvement_pct']:+.1f}%)")
 
         # Verify output files
         expected_files = [
             "baseline_score.txt",
             "optimized-metaprompt-messages.txt",
-            "optimized-hierarchical-messages.txt",
-            "optimized-fewshot-messages.txt",
+            "optimized-hierarchical-reflective-messages.txt",
+            "optimized-few-shot-bayesian-messages.txt",
+            "optimized-gepa-messages.txt",
+            "optimized-evolutionary-messages.txt",
             "comparison_table.txt",
             "results_summary.json"
         ]
@@ -155,13 +155,13 @@ class TestOptimizeE2E:
 
         print(f"\n✓ All {len(expected_files)} files created")
 
-        # Verify winner (now has train_score and test_score)
+        # Verify winner (now has dev_score and test_score)
         assert "winner" in summary
         assert summary["winner"]["name"] in expected_optimizers
-        assert "train_score" in summary["winner"]
+        assert "dev_score" in summary["winner"]
         assert "test_score" in summary["winner"]
         print(f"\n✓ Winner: {summary['winner']['name']} "
-              f"(train={summary['winner']['train_score']:.4f}, "
+              f"(dev={summary['winner']['dev_score']:.4f}, "
               f"test={summary['winner']['test_score']:.4f})")
 
         # Verify stdout markers

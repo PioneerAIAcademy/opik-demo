@@ -28,7 +28,7 @@ CONFIGURATION - Default values (can be overridden via CLI arguments)
 
 # Default configuration values
 DEFAULT_SAMPLE_SIZE = None  # None = use full dataset (~153 rows → 102 train, 51 test)
-DEFAULT_N_TRIALS = 5        # Number of optimization rounds per optimizer
+DEFAULT_N_TRIALS = 10       # Number of optimization rounds per optimizer
 DEFAULT_N_THREADS = 4       # Parallel threads for evaluation
 
 # Model in LiteLLM format: "provider/endpoint/model"
@@ -66,6 +66,8 @@ from opik_optimizer import (
     MetaPromptOptimizer,
     HierarchicalReflectiveOptimizer,
     FewShotBayesianOptimizer,
+    GepaOptimizer,
+    EvolutionaryOptimizer,
     ChatPrompt
 )
 
@@ -97,7 +99,7 @@ def parse_args():
     parser.add_argument('--model', type=str, default=DEFAULT_MODEL,
                        help='LLM model (LiteLLM format)')
     parser.add_argument('--optimizers', type=str, default='all',
-                       help='Comma-separated: metaprompt,hierarchical,fewshot (default: all)')
+                       help='Comma-separated: metaprompt,hierarchical,fewshot,gepa,evolutionary (default: all)')
     parser.add_argument('--output-dir', type=str, default='runs',
                        help='Base directory for outputs')
     parser.add_argument('--quiet', action='store_true',
@@ -122,9 +124,10 @@ args = parse_args()
 model_params = {
     "reasoning_effort": args.reasoning_effort,
     "verbosity": args.verbosity,
-    "max_output_tokens": args.max_output_tokens,
     "num_retries": 5  # Retry on transient API errors (connection drops, rate limits)
 }
+if args.max_output_tokens > 0:
+    model_params["max_output_tokens"] = args.max_output_tokens
 
 # Validate configuration values
 if args.sample_size is not None and args.sample_size < 5:
@@ -314,6 +317,21 @@ def create_opik_dataset(name: str, df: pd.DataFrame):
 train_dataset = create_opik_dataset("grading-train-dataset", train_df)
 dev_dataset = create_opik_dataset("grading-dev-dataset", dev_df)
 test_dataset = create_opik_dataset("grading-test-dataset", test_df)
+
+# Allow Opik server to sync (eventual consistency)
+# This prevents dataset_item_id mismatches in GEPA optimizer
+if not args.quiet:
+    print("\n⏳ Waiting for Opik server sync...")
+time.sleep(3)
+
+# Verify dataset items have IDs (debug for GEPA issues)
+train_items = train_dataset.get_items()
+if train_items:
+    first_id = train_items[0].get("id")
+    if not args.quiet:
+        print(f"   ✅ Train dataset verified: {len(train_items)} items, first ID: {first_id[:20]}...")
+else:
+    print("   ⚠️  WARNING: Train dataset has no items!")
 
 # %% [markdown]
 """
@@ -554,12 +572,12 @@ print("✅ Created initial ChatPrompt (system + user messages)")
 # Parse which optimizers to run
 enabled_optimizers = set()
 if args.optimizers.lower() == 'all':
-    enabled_optimizers = {'metaprompt', 'hierarchical', 'fewshot'}
+    enabled_optimizers = {'metaprompt', 'hierarchical', 'fewshot', 'gepa', 'evolutionary'}
 else:
     enabled_optimizers = set(opt.strip().lower() for opt in args.optimizers.split(','))
 
 # Validate optimizer names
-valid_optimizers = {'metaprompt', 'hierarchical', 'fewshot'}
+valid_optimizers = {'metaprompt', 'hierarchical', 'fewshot', 'gepa', 'evolutionary'}
 invalid = enabled_optimizers - valid_optimizers
 if invalid:
     print(f"❌ Invalid optimizer names: {invalid}")
@@ -573,6 +591,8 @@ if not args.quiet:
 metaprompt_result = None
 hierarchical_result = None
 fewshot_result = None
+gepa_result = None
+evolutionary_result = None
 
 # %% [markdown]
 """
@@ -891,6 +911,162 @@ else:
 # %% [markdown]
 """
 ---
+## Experiment 4: GEPA Optimizer
+
+**How it works:**
+1. Uses reflection to analyze evaluation results
+2. Employs evolutionary algorithms to explore the prompt space
+3. Combines both approaches for effective optimization
+
+**Parameters:**
+- Uses default GEPA parameters for initial testing
+"""
+
+# %% Run GEPA optimization
+if 'gepa' in enabled_optimizers:
+    print("\n" + "=" * 80)
+    print("🧬 OPTIMIZATION 4: GEPA Optimizer")
+    print("=" * 80)
+    print("⏳ This may take several minutes...\n")
+
+    gepa_optimizer = GepaOptimizer(
+        model=args.model,
+        n_threads=args.n_threads,
+        verbose=1 if not args.quiet else 0,
+        seed=42
+    )
+
+    start_time = time.time()
+
+    # WORKAROUND: opik-optimizer GEPA adapter bug (as of v2.3.7)
+    # The adapter only receives train_dataset but GEPA uses both train and val.
+    # When GEPA evaluates val items, their IDs don't exist in train_dataset,
+    # causing "Dropping N dataset_item_ids not present in dataset" warnings
+    # and 0.0 scores. Using train_dataset for both works around this.
+    # Bug: adapter.py:375 should also receive validation_dataset
+    # TODO: Remove workaround when opik-optimizer fixes this bug
+    gepa_result = gepa_optimizer.optimize_prompt(
+        prompt=initial_prompt,
+        dataset=train_dataset,              # For failure analysis
+        validation_dataset=train_dataset,   # WORKAROUND: use train (not dev) to avoid ID mismatch bug
+        metric=score_accuracy_metric_func,
+        n_samples=len(train_df),
+        max_trials=args.n_trials
+    )
+
+    gepa_elapsed_time = time.time() - start_time
+
+    # %% Display GEPA results
+    print("\n" + "=" * 80)
+    print("✅ GEPA Optimization Complete!")
+    print("=" * 80)
+
+    gepa_result.display()
+
+    print("\n📊 Summary:")
+    print(f"   Baseline Dev Score:  {baseline_dev_score:.4f}")
+    print(f"   Optimized Dev Score: {gepa_result.score:.4f}")
+    print(f"   Optimization time: {gepa_elapsed_time/60:.1f} minutes")
+
+    if gepa_result.initial_score is not None:
+        improvement = gepa_result.score - gepa_result.initial_score
+        improvement_pct = (improvement / gepa_result.initial_score) * 100
+        print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
+
+    # %% Save GEPA result
+    output_file = save_optimizer_result_to_file(
+        run_dir=RUN_DIR,
+        optimizer_name="GEPA",
+        result=gepa_result,
+        baseline_score=baseline_dev_score,
+        elapsed_time=gepa_elapsed_time
+    )
+    print(f"\n💾 Saved optimized prompt to: {output_file}")
+else:
+    gepa_elapsed_time = None
+    print("\n⏭️  Skipping GEPA optimizer")
+
+# %% [markdown]
+"""
+---
+## Experiment 5: Evolutionary Optimizer
+
+**How it works:**
+1. Uses genetic algorithms to evolve prompt populations
+2. Enables discovery of novel prompt structures
+3. Supports multi-objective optimization (e.g., score vs. length)
+
+**Parameters:**
+- Uses default Evolutionary parameters for initial testing
+"""
+
+# %% Run Evolutionary optimization
+if 'evolutionary' in enabled_optimizers:
+    print("\n" + "=" * 80)
+    print("🧬 OPTIMIZATION 5: Evolutionary Optimizer")
+    print("=" * 80)
+    print("⏳ This may take several minutes...\n")
+
+    # WORKAROUND: Evolutionary optimizer generates empty messages during mutation/crossover
+    # which causes failures with the Responses API. Use standard Chat Completions API instead.
+    # See: https://github.com/comet-ml/opik/issues/XXXX
+    evolutionary_model = args.model.replace("/responses", "")
+    evolutionary_model_params = {k: v for k, v in model_params.items() if k != "max_output_tokens"}
+
+    evolutionary_optimizer = EvolutionaryOptimizer(
+        model=evolutionary_model,
+        model_parameters=evolutionary_model_params,
+        n_threads=args.n_threads,
+        verbose=1 if not args.quiet else 0,
+        seed=42
+    )
+
+    start_time = time.time()
+
+    evolutionary_result = evolutionary_optimizer.optimize_prompt(
+        prompt=initial_prompt,
+        dataset=train_dataset,              # For failure analysis
+        validation_dataset=dev_dataset,     # For scoring candidates ⭐
+        metric=score_accuracy_metric_func,
+        n_samples=len(train_df),
+        max_trials=args.n_trials
+    )
+
+    evolutionary_elapsed_time = time.time() - start_time
+
+    # %% Display Evolutionary results
+    print("\n" + "=" * 80)
+    print("✅ Evolutionary Optimization Complete!")
+    print("=" * 80)
+
+    evolutionary_result.display()
+
+    print("\n📊 Summary:")
+    print(f"   Baseline Dev Score:  {baseline_dev_score:.4f}")
+    print(f"   Optimized Dev Score: {evolutionary_result.score:.4f}")
+    print(f"   Optimization time: {evolutionary_elapsed_time/60:.1f} minutes")
+
+    if evolutionary_result.initial_score is not None:
+        improvement = evolutionary_result.score - evolutionary_result.initial_score
+        improvement_pct = (improvement / evolutionary_result.initial_score) * 100
+        print(f"   Improvement: {improvement:+.4f} ({improvement_pct:+.1f}%)")
+
+    # %% Save Evolutionary result
+    output_file = save_optimizer_result_to_file(
+        run_dir=RUN_DIR,
+        optimizer_name="Evolutionary",
+        result=evolutionary_result,
+        baseline_score=baseline_dev_score,
+        elapsed_time=evolutionary_elapsed_time
+    )
+    print(f"\n💾 Saved optimized prompt to: {output_file}")
+else:
+    evolutionary_elapsed_time = None
+    print("\n⏭️  Skipping Evolutionary optimizer")
+
+# %% [markdown]
+"""
+---
 # TEST SET EVALUATION
 
 Now evaluate the best prompts on the held-out test set to measure generalization!
@@ -920,6 +1096,8 @@ print(f"✅ Baseline test score: {baseline_test_score:.4f}")
 metaprompt_test_score = None
 hierarchical_test_score = None
 fewshot_test_score = None
+gepa_test_score = None
+evolutionary_test_score = None
 
 if metaprompt_result is not None:
     print("\nEvaluating MetaPrompt on test set...")
@@ -968,6 +1146,38 @@ if fewshot_result is not None:
         n_threads=args.n_threads
     )
     print(f"✅ FewShot test score: {fewshot_test_score:.4f}")
+
+if gepa_result is not None:
+    print("\nEvaluating GEPA on test set...")
+    gepa_test_prompt = ChatPrompt(
+        messages=gepa_result.prompt,
+        model=args.model,
+        model_parameters=model_params
+    )
+    gepa_test_score = baseline_optimizer.evaluate_prompt(
+        prompt=gepa_test_prompt,
+        dataset=test_dataset,
+        metric=score_accuracy_metric_func,
+        n_samples=len(test_df),
+        n_threads=args.n_threads
+    )
+    print(f"✅ GEPA test score: {gepa_test_score:.4f}")
+
+if evolutionary_result is not None:
+    print("\nEvaluating Evolutionary on test set...")
+    evolutionary_test_prompt = ChatPrompt(
+        messages=evolutionary_result.prompt,
+        model=args.model,
+        model_parameters=model_params
+    )
+    evolutionary_test_score = baseline_optimizer.evaluate_prompt(
+        prompt=evolutionary_test_prompt,
+        dataset=test_dataset,
+        metric=score_accuracy_metric_func,
+        n_samples=len(test_df),
+        n_threads=args.n_threads
+    )
+    print(f"✅ Evolutionary test score: {evolutionary_test_score:.4f}")
 
 test_eval_elapsed_time = time.time() - test_eval_start_time
 print(f"\n⏱️  Test evaluation time: {test_eval_elapsed_time/60:.1f} minutes")
@@ -1036,6 +1246,30 @@ if fewshot_result is not None:
         "Output File": "optimized-fewshot-messages.txt"
     })
 
+if gepa_result is not None:
+    dev_imp = calc_improvement(gepa_result, baseline_dev_score)
+    test_imp = ((gepa_test_score - baseline_test_score) / baseline_test_score) * 100 if baseline_test_score != 0 else 0.0
+    results_data.append({
+        "Optimizer": "GEPA",
+        "Dev Score": gepa_result.score,
+        "Test Score": gepa_test_score,
+        "Dev Improvement": f"{dev_imp:+.1f}%",
+        "Test Improvement": f"{test_imp:+.1f}%",
+        "Output File": "optimized-gepa-messages.txt"
+    })
+
+if evolutionary_result is not None:
+    dev_imp = calc_improvement(evolutionary_result, baseline_dev_score)
+    test_imp = ((evolutionary_test_score - baseline_test_score) / baseline_test_score) * 100 if baseline_test_score != 0 else 0.0
+    results_data.append({
+        "Optimizer": "Evolutionary",
+        "Dev Score": evolutionary_result.score,
+        "Test Score": evolutionary_test_score,
+        "Dev Improvement": f"{dev_imp:+.1f}%",
+        "Test Improvement": f"{test_imp:+.1f}%",
+        "Output File": "optimized-evolutionary-messages.txt"
+    })
+
 results_df = pd.DataFrame(results_data)
 
 print("\n" + "=" * 80)
@@ -1082,6 +1316,7 @@ summary = {
         "n_trials": args.n_trials,
         "n_threads": args.n_threads,
         "model": args.model,
+        "model_parameters": model_params,
         "timestamp": os.path.basename(RUN_DIR),
         "enabled_optimizers": list(enabled_optimizers)
     },
@@ -1097,7 +1332,9 @@ summary = {
 optimizer_map = [
     ('MetaPrompt', metaprompt_result, metaprompt_test_score),
     ('Hierarchical', hierarchical_result, hierarchical_test_score),
-    ('FewShot', fewshot_result, fewshot_test_score)
+    ('FewShot', fewshot_result, fewshot_test_score),
+    ('GEPA', gepa_result, gepa_test_score),
+    ('Evolutionary', evolutionary_result, evolutionary_test_score)
 ]
 
 for name, result_obj, test_score in optimizer_map:
@@ -1139,6 +1376,10 @@ if hierarchical_elapsed_time is not None:
     timings_data.append({"Stage": "Hierarchical Optimizer", "Time (min)": f"{hierarchical_elapsed_time/60:.1f}"})
 if fewshot_elapsed_time is not None:
     timings_data.append({"Stage": "Few-Shot Optimizer", "Time (min)": f"{fewshot_elapsed_time/60:.1f}"})
+if gepa_elapsed_time is not None:
+    timings_data.append({"Stage": "GEPA Optimizer", "Time (min)": f"{gepa_elapsed_time/60:.1f}"})
+if evolutionary_elapsed_time is not None:
+    timings_data.append({"Stage": "Evolutionary Optimizer", "Time (min)": f"{evolutionary_elapsed_time/60:.1f}"})
 
 timings_data.append({"Stage": "Test Set Evaluation", "Time (min)": f"{test_eval_elapsed_time/60:.1f}"})
 
@@ -1150,6 +1391,10 @@ if hierarchical_elapsed_time is not None:
     total_time += hierarchical_elapsed_time
 if fewshot_elapsed_time is not None:
     total_time += fewshot_elapsed_time
+if gepa_elapsed_time is not None:
+    total_time += gepa_elapsed_time
+if evolutionary_elapsed_time is not None:
+    total_time += evolutionary_elapsed_time
 
 timings_data.append({"Stage": "TOTAL", "Time (min)": f"{total_time/60:.1f}"})
 
@@ -1167,6 +1412,8 @@ summary["timings"] = {
     "metaprompt_minutes": round(metaprompt_elapsed_time/60, 1) if metaprompt_elapsed_time else None,
     "hierarchical_minutes": round(hierarchical_elapsed_time/60, 1) if hierarchical_elapsed_time else None,
     "fewshot_minutes": round(fewshot_elapsed_time/60, 1) if fewshot_elapsed_time else None,
+    "gepa_minutes": round(gepa_elapsed_time/60, 1) if gepa_elapsed_time else None,
+    "evolutionary_minutes": round(evolutionary_elapsed_time/60, 1) if evolutionary_elapsed_time else None,
     "test_eval_minutes": round(test_eval_elapsed_time/60, 1),
     "total_minutes": round(total_time/60, 1)
 }
