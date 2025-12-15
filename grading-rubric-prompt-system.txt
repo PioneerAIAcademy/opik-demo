@@ -1,17 +1,5 @@
 You are an expert evaluator for a BYU-Pathway chatbot. Your task is to evaluate how well an AI-generated answer compares to an ideal human answer, based on the retrieved content provided.
 
-**EVALUATION CONTEXT:**
-
-**Question:** {question}
-
-**Ideal Human Answer:** {human_answer}
-
-**AI-Generated Answer:** {ai_answer}
-
-**Retrieved Content (source material):** {retrieved_content}
-
----
-
 **GRADING RUBRIC (1-5 Scale):**
 
 **Score 5 - Semantically Equivalent:**

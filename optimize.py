@@ -317,10 +317,16 @@ test_dataset = create_opik_dataset("grading-test-dataset", test_df)
 
 # %% [markdown]
 """
-## Load the Prompt Template
+## Load the Prompt Templates
 
-Our grading rubric prompt is stored in a separate text file for easy editing.
-It uses Python format strings like {question}, {ai_answer}, etc.
+Our grading rubric is split into TWO files for optimizer compatibility:
+- **grading-rubric-prompt-system.txt**: The grading rubric (system message)
+- **grading-rubric-prompt-user.txt**: Template variables only (user message)
+
+**Why this split?**
+MetaPrompt optimizer only modifies system messages by default. By putting the
+grading rubric in the system message, the optimizer can actually improve it.
+The user message with template variables is preserved during optimization.
 
 **How Opik fills the template:**
 Opik automatically maps dataset fields to template variables by name:
@@ -329,12 +335,20 @@ Opik automatically maps dataset fields to template variables by name:
 - And so on...
 """
 
-# %% Load prompt template
-prompt_template = load_text_template("grading-rubric-prompt.txt")
+# %% Load prompt templates (system + user for optimizer compatibility)
+# MetaPrompt optimizer only modifies system messages by default, so we split:
+# - System message: Contains the grading rubric (will be optimized)
+# - User message: Contains only template variables (preserved during optimization)
+system_template = load_text_template("grading-rubric-prompt-system.txt")
+user_template = load_text_template("grading-rubric-prompt-user.txt")
 
-print("\n📄 Template preview (first 300 chars):")
+print("\n📄 System template preview (first 300 chars):")
 print("-" * 80)
-print(prompt_template[:300] + "...")
+print(system_template[:300] + "...")
+print("-" * 80)
+print("\n📄 User template (full):")
+print("-" * 80)
+print(user_template)
 print("-" * 80)
 
 # %% [markdown]
@@ -508,26 +522,33 @@ print("✅ Metric function ready")
 """
 ## Create the Initial ChatPrompt
 
-The ChatPrompt wraps our template in the format Opik expects.
-We put the template in the "user" role message.
+The ChatPrompt wraps our templates in the format Opik expects.
+We use a two-message structure:
+- **System message**: Contains the grading rubric (will be optimized by MetaPrompt)
+- **User message**: Contains template variables (preserved during optimization)
 
 **Note:** We only specify the template here, NOT the model!
 The model configuration goes in the optimizer.
 """
 
 # %% Create initial ChatPrompt
+# Using system + user message structure so MetaPrompt can optimize the rubric
 initial_prompt = ChatPrompt(
     messages=[
         {
+            "role": "system",
+            "content": system_template  # The grading rubric (will be optimized)
+        },
+        {
             "role": "user",
-            "content": prompt_template  # The template with {question}, {ai_answer}, etc.
+            "content": user_template    # Template variables only (preserved)
         }
     ],
     model=args.model,               # Use user's model for prompt evaluation
     model_parameters=model_params   # Pass Responses API parameters to prompt
 )
 
-print("✅ Created initial ChatPrompt")
+print("✅ Created initial ChatPrompt (system + user messages)")
 
 # %% Optimizer selection
 # Parse which optimizers to run
