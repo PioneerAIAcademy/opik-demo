@@ -225,14 +225,14 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 ## 💡 Best Practices
 
 ### For Learning
-1. **Start small**: Use `SAMPLE_SIZE=15` for quick iterations
+1. **Start small**: Use `SAMPLE_SIZE=30` for quick iterations
 2. **Run cells interactively**: Understand each step before proceeding
 3. **Examine outputs**: Look at optimized prompts to see what changed
 4. **Compare metrics**: Try different scoring approaches
 
 ### For Production
 1. **Use full dataset**: Set `SAMPLE_SIZE=None` for final optimization
-2. **Increase trials**: Set `N_TRIALS=5` or higher for better results
+2. **Increase trials**: Set `N_TRIALS=10` or higher for better results
 3. **Test on holdout set**: Evaluate final prompt on `test_dataset`
 4. **Monitor costs**: Track API usage in OpenAI dashboard
 
