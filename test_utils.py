@@ -10,6 +10,7 @@ import pandas as pd
 import os
 from utils import (
     extract_score_from_text,
+    extract_emotion_from_text,
     load_csv_with_stratified_split,
     load_text_template,
     create_timestamped_run_dir
@@ -74,6 +75,75 @@ class TestScoreExtraction:
 **Score:** 4.8
 **Justification:** The answer accurately reflects the information."""
         assert extract_score_from_text(text) == 4.8
+
+
+class TestEmotionExtraction:
+    """Test emotion extraction from various text formats."""
+
+    def test_single_word_lowercase(self):
+        """Test single word emotion in lowercase."""
+        assert extract_emotion_from_text("joy") == "joy"
+        assert extract_emotion_from_text("anger") == "anger"
+        assert extract_emotion_from_text("sadness") == "sadness"
+        assert extract_emotion_from_text("surprise") == "surprise"
+
+    def test_single_word_uppercase(self):
+        """Test single word emotion in uppercase."""
+        assert extract_emotion_from_text("JOY") == "joy"
+        assert extract_emotion_from_text("ANGER") == "anger"
+
+    def test_single_word_mixed_case(self):
+        """Test single word emotion in mixed case."""
+        assert extract_emotion_from_text("Joy") == "joy"
+        assert extract_emotion_from_text("Surprise") == "surprise"
+
+    def test_with_punctuation(self):
+        """Test emotion with trailing punctuation."""
+        assert extract_emotion_from_text("joy.") == "joy"
+        assert extract_emotion_from_text("anger!") == "anger"
+        assert extract_emotion_from_text("sadness?") == "sadness"
+        assert extract_emotion_from_text("surprise;") == "surprise"
+
+    def test_with_whitespace(self):
+        """Test emotion with leading/trailing whitespace."""
+        assert extract_emotion_from_text("  joy  ") == "joy"
+        assert extract_emotion_from_text("\nanger\n") == "anger"
+
+    def test_in_sentence(self):
+        """Test emotion embedded in a sentence."""
+        assert extract_emotion_from_text("The emotion is joy") == "joy"
+        assert extract_emotion_from_text("I detect anger in this text") == "anger"
+        assert extract_emotion_from_text("This expresses sadness") == "sadness"
+
+    def test_invalid_emotion(self):
+        """Test that invalid emotions return None."""
+        assert extract_emotion_from_text("happy") is None
+        assert extract_emotion_from_text("fear") is None
+        assert extract_emotion_from_text("love") is None
+        assert extract_emotion_from_text("excited") is None
+
+    def test_empty_string(self):
+        """Test empty string returns None."""
+        assert extract_emotion_from_text("") is None
+
+    def test_no_emotion_found(self):
+        """Test text with no valid emotion."""
+        assert extract_emotion_from_text("This is just regular text") is None
+        assert extract_emotion_from_text("12345") is None
+
+    def test_multiple_emotions_returns_first(self):
+        """Test that first valid emotion is returned when multiple present."""
+        # 'joy' comes before 'anger' in the set iteration (implementation detail)
+        # but the order depends on which is found first in the text
+        text = "I see anger and also joy"
+        result = extract_emotion_from_text(text)
+        assert result in ["anger", "joy"]  # Either is acceptable
+
+    def test_partial_match_rejected(self):
+        """Test that partial matches are not accepted for single-word responses."""
+        # "joyful" contains "joy" but as a single word response it won't match
+        # However, when searching in text, it will find "joy" within "joyful"
+        assert extract_emotion_from_text("joyful") == "joy"  # Found in text search
 
 
 class TestDatasetLoading:

@@ -1,4 +1,4 @@
-# Grading Rubric Prompt Optimization Workshop
+# Emotion Classification Prompt Optimization Workshop
 
 Welcome to the prompt optimization workshop! Learn how to use Opik's agent optimizer to improve AI prompts through hands-on experimentation.
 
@@ -50,7 +50,7 @@ Edit the configuration section at the top of `optimize.py`:
 
 ```python
 # Configuration
-SAMPLE_SIZE = 30  # Start wit 30 for quick testing (12 train, 12 dev, 6 test)
+SAMPLE_SIZE = 30  # Start with 30 for quick testing (12 train, 12 dev, 6 test)
                    # Set to None for full dataset
 N_TRIALS = 1      # Number of optimization rounds (default: 10)
 N_THREADS = 4     # Parallel threads for speed
@@ -103,19 +103,17 @@ python optimize.py
 
 ### CLI Arguments
 
-| Argument                   | Default                     | Description                              |
-| -------------------------- | --------------------------- | ---------------------------------------- |
-| `--sample-size N`          | None                        | Number of samples (None = full)          |
-| `--n-trials N`             | 10                          | Optimization trials per optimizer        |
-| `--n-threads N`            | 4                           | Parallel threads for evaluation          |
-| `--model MODEL`            | openai/responses/gpt-5-mini | LLM model (LiteLLM format)               |
-| `--optimizers LIST`        | all                         | Comma-separated optimizer list           |
-| `--output-dir DIR`         | runs                        | Output directory                         |
-| `--split-ratio RATIO`      | 40/40/20                    | Train/Dev/Test split ratio               |
-| `--reasoning-effort LEVEL` | low                         | Reasoning effort (low/medium/high/xhigh) |
-| `--verbosity LEVEL`        | low                         | Output verbosity (low/medium/high)       |
-| `--max-output-tokens N`    | 65536                       | Max output tokens for Responses API      |
-| `--quiet`                  | False                       | Suppress verbose output                  |
+| Argument              | Default           | Description                              |
+| --------------------- | ----------------- | ---------------------------------------- |
+| `--sample-size N`     | None              | Number of samples (None = full)          |
+| `--n-trials N`        | 10                | Optimization trials per optimizer        |
+| `--n-threads N`       | 4                 | Parallel threads for evaluation          |
+| `--reasoning-model`   | openai/gpt-4o     | Model for optimizer logic (LiteLLM)      |
+| `--task-model`        | openai/gpt-4o-mini| Model for prompt evaluation (LiteLLM)    |
+| `--optimizers LIST`   | all               | Comma-separated optimizer list           |
+| `--output-dir DIR`    | runs              | Output directory                         |
+| `--split-ratio RATIO` | 40/40/20          | Train/Dev/Test split ratio               |
+| `--quiet`             | False             | Suppress verbose output                  |
 
 **Note**: JSON summary (`results_summary.json`) is automatically created in every run for easy verification.
 
@@ -125,13 +123,13 @@ python optimize.py
 opik-demo/
 ├── optimize.py                    # Main workshop script (interactive cells)
 ├── utils.py                       # Reusable utility functions
-├── grading-rubric-prompt-system.txt  # System prompt template (optimized by MetaPrompt)
-├── grading-rubric-prompt-user.txt    # User prompt template (template variables only)
-├── grading-rubric.md              # Grading rubric documentation
-├── answer-evaluation.csv          # Evaluation dataset (153 examples)
+├── emotion-prompt-system.txt      # System prompt template (optimized by MetaPrompt)
+├── emotion-prompt-user.txt        # User prompt template (template variable only)
+├── sampled_emotions.csv           # Evaluation dataset (~300 examples)
 ├── test_utils.py                  # Unit tests
 ├── requirements.txt               # Python dependencies
 ├── README.md                      # This file
+├── TROUBLESHOOTING.md             # Solutions to common problems
 ├── .env                           # API keys (you create this)
 └── runs/                          # Output directory (auto-created)
     └── YYYY-MM-DD_HH-MM-SS/       # Timestamped run folder
@@ -156,7 +154,7 @@ Verify utilities work correctly:
 pytest test_utils.py -v --cov=utils
 
 # Run specific test class
-pytest test_utils.py::TestScoreExtraction -v
+pytest test_utils.py::TestEmotionExtraction -v
 ```
 
 ### End-to-End Test
@@ -164,7 +162,7 @@ pytest test_utils.py::TestScoreExtraction -v
 Test the full optimize.py script with real API calls:
 
 ```bash
-# Run the E2E test (uses real APIs, ~10-15 min)
+# Run the E2E test (uses real APIs, ~5 min)
 pytest test_optimize_e2e.py -v -s
 
 # Run only unit tests (skip expensive E2E)
@@ -175,8 +173,8 @@ pytest -m "not e2e" -v
 
 ## 📖 Understanding the Code
 
-- **Dataset**: 153 examples with human scores (1-5), split 40% train, 40% dev, 20% test with stratification
-- **Metric**: Custom `ScoreAccuracyMetric` compares LLM scores to human scores (formula: `1 - abs(diff) / 4.0`)
+- **Dataset**: ~300 examples with emotion labels (joy, anger, sadness, surprise), split 40% train, 40% dev, 20% test with stratification
+- **Metric**: Custom `EmotionAccuracyMetric` compares LLM predictions to expected emotions (exact match: 1.0 if correct, 0.0 if wrong)
 - **Optimizers**: MetaPrompt (iterative critique), Hierarchical (failure analysis), Few-Shot (Bayesian search), GEPA (reflection + evolutionary), Evolutionary (genetic algorithms)
 - **Pattern**: All optimizers follow: create → evaluate baseline → optimize → display results
 
@@ -184,7 +182,7 @@ pytest -m "not e2e" -v
 
 All functions in `utils.py` can be copied to your own projects:
 
-- `extract_score_from_text()` - Extract scores from LLM responses
+- `extract_emotion_from_text()` - Extract emotions from LLM responses
 - `load_csv_with_stratified_split()` - Load and split datasets
 - `load_text_template()` - Load text templates
 - `create_timestamped_run_dir()` - Create timestamped output directories
@@ -211,15 +209,15 @@ All outputs are saved in `runs/YYYY-MM-DD_HH-MM-SS/`:
 ### Comparison Table
 
 ```
-Optimizer      Score  Improvement  Output File
-Baseline       0.65   —            —
-MetaPrompt     0.78   +20.0%       optimized-metaprompt-messages.txt
-Hierarchical   0.82   +26.2%       optimized-hierarchical-messages.txt
-Few-Shot       0.75   +15.4%       optimized-fewshot-messages.txt
-GEPA           0.80   +23.1%       optimized-gepa-messages.txt
-Evolutionary   0.79   +21.5%       optimized-evolutionary-messages.txt
+Optimizer      Dev Score  Test Score  Dev Improvement  Test Improvement  Output File
+Baseline       0.65       0.63        —                —                 —
+MetaPrompt     0.78       0.75        +20.0%           +19.0%            optimized-metaprompt-messages.txt
+Hierarchical   0.82       0.80        +26.2%           +27.0%            optimized-hierarchical-messages.txt
+Few-Shot       0.75       0.73        +15.4%           +15.9%            optimized-fewshot-messages.txt
+GEPA           0.80       0.77        +23.1%           +22.2%            optimized-gepa-messages.txt
+Evolutionary   0.79       0.76        +21.5%           +20.6%            optimized-evolutionary-messages.txt
 
-🏆 WINNER: Hierarchical with score 0.82
+🏆 WINNER (by test score): Hierarchical with score 0.80
 ```
 
 ### Opik Dashboard
@@ -256,43 +254,9 @@ View detailed analysis at [comet.com/opik](https://www.comet.com/opik):
 | Full single   | 1          | None    | 15-30 min |
 | Full all      | 5          | None    | 1-2 hours |
 
-**Note:** API costs vary by model. With `gpt-5-mini` (default), even full runs typically cost under $2.
-
 ## 🆘 Troubleshooting
 
 Having issues? See **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** for detailed solutions to common problems.
-
-## ⚠️ Known Issues & Workarounds
-
-### GEPA Optimizer Adapter Bug (opik-optimizer v2.3.7)
-
-**Issue:** The GEPA adapter only receives `train_dataset` but GEPA internally uses both train and validation datasets. When GEPA evaluates validation items, their IDs don't exist in `train_dataset`, causing "Dropping N dataset_item_ids not present in dataset" warnings and 0.0 scores.
-
-**Workaround:** The code uses `train_dataset` for both the `dataset` and `validation_dataset` parameters:
-
-```python
-gepa_result = gepa_optimizer.optimize_prompt(
-    prompt=initial_prompt,
-    dataset=train_dataset,
-    validation_dataset=train_dataset,  # WORKAROUND: use train (not dev)
-    ...
-)
-```
-
-**Status:** Bug in `adapter.py:375` - should also receive `validation_dataset`. Remove workaround when opik-optimizer fixes this.
-
-### Evolutionary Optimizer + Responses API Incompatibility
-
-**Issue:** The Evolutionary optimizer generates empty messages during mutation/crossover operations, which causes failures with OpenAI's Responses API (used by reasoning models like GPT-5).
-
-**Workaround:** The code removes `/responses` from the model path and excludes `max_output_tokens` for the Evolutionary optimizer:
-
-```python
-evolutionary_model = args.model.replace("/responses", "")
-evolutionary_model_params = {k: v for k, v in model_params.items() if k != "max_output_tokens"}
-```
-
-**Status:** This forces Evolutionary optimizer to use the standard Chat Completions API instead of the Responses API.
 
 ## 📚 Learn More
 

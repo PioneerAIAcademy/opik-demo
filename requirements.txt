@@ -1,6 +1,6 @@
 # Core dependencies
 opik>=1.9.46
-opik-optimizer>=2.3.7
+opik-optimizer>=2.3.8
 openai>=2.11.0
 litellm>=1.80.8
 python-dotenv>=1.2.1

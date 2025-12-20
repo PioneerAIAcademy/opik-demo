@@ -1,6 +1,6 @@
 # %% [markdown]
 """
-# Grading Rubric Prompt Optimization Workshop
+# Emotion Classification Prompt Optimization Workshop
 
 Welcome! This notebook teaches you how to optimize prompts using Opik's agent optimizer.
 
@@ -9,8 +9,11 @@ Welcome! This notebook teaches you how to optimize prompts using Opik's agent op
 2. How to load and prepare evaluation datasets with stratification
 3. How to create custom metrics for scoring
 4. How to run baseline evaluations
-5. How to use three different optimizers
+5. How to use five different optimizers
 6. How to compare and analyze results
+
+**Task:** Classify social media text into one of four emotions:
+- joy, anger, sadness, surprise
 
 **Prerequisites:**
 - Python 3.12+
@@ -25,26 +28,21 @@ CONFIGURATION - Default values (can be overridden via CLI arguments)
 """
 
 # Default configuration values
-DEFAULT_SAMPLE_SIZE = None  # None = use full dataset (~153 rows → 102 train, 51 test)
+DEFAULT_SAMPLE_SIZE = None  # None = use full dataset (~300 rows)
 DEFAULT_N_TRIALS = 10       # Number of optimization rounds per optimizer
 DEFAULT_N_THREADS = 4       # Parallel threads for evaluation
 
-# Model in LiteLLM format: "provider/endpoint/model"
-# Examples: "openai/gpt-4o", "anthropic/claude-3-5-sonnet-20241022"
-# "responses" endpoint enables reasoning models (GPT-5, etc.)
+# Two models are used during optimization:
+# 1. REASONING_MODEL: Used by the optimizer for generating candidates, mutations, analysis
+# 2. TASK_MODEL: Used to evaluate prompts on the dataset
+#
+# Model format is LiteLLM: "provider/model"
+# Examples: "openai/gpt-4o", "openai/gpt-4o-mini", "anthropic/claude-3-5-sonnet-20241022"
 # See: https://docs.litellm.ai/docs/providers
-DEFAULT_MODEL = "openai/responses/gpt-5-mini"
+DEFAULT_REASONING_MODEL = "openai/gpt-4o"       # Smarter model for optimization logic
+DEFAULT_TASK_MODEL = "openai/gpt-4o-mini"       # Faster/cheaper model for evaluation
 
-# ⚠️  COST & TIME WARNING:
-# - Full dataset (153 samples): ~4,500 API calls, 45-90 minutes, ~$20-50
-# - Small test (15 samples): ~150 API calls, 5-10 minutes, ~$1-2
-# 💡 Recommendation: Start with --sample-size 15 to verify everything works!
-
-# Default Responses API parameters (LiteLLM flat format)
-# See: https://docs.litellm.ai/docs/providers/openai/responses_api
-DEFAULT_REASONING_EFFORT = "low"         # "low" | "medium" | "high" | "xhigh"
-DEFAULT_VERBOSITY = "low"                # "low" | "medium" | "high"
-DEFAULT_MAX_OUTPUT_TOKENS = 65536        # Max tokens (includes reasoning + output)
+# 💡 Recommendation: Start with --sample-size 30 to verify everything works!
 
 # %% Setup and imports
 import os
@@ -71,7 +69,7 @@ from opik_optimizer import (
 
 # Import our custom utilities
 from utils import (
-    extract_score_from_text,
+    extract_emotion_from_text,
     load_csv_with_stratified_split,
     load_text_template,
     create_timestamped_run_dir,
@@ -85,31 +83,25 @@ load_dotenv()
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description='Grading Rubric Prompt Optimization',
+        description='Emotion Classification Prompt Optimization',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument('--sample-size', type=int, default=DEFAULT_SAMPLE_SIZE,
-                       help='Number of samples (None = full dataset ~153)')
+                       help='Number of samples (None = full dataset ~300)')
     parser.add_argument('--n-trials', type=int, default=DEFAULT_N_TRIALS,
                        help='Optimization trials per optimizer')
     parser.add_argument('--n-threads', type=int, default=DEFAULT_N_THREADS,
                        help='Parallel threads for evaluation')
-    parser.add_argument('--model', type=str, default=DEFAULT_MODEL,
-                       help='LLM model (LiteLLM format)')
+    parser.add_argument('--reasoning-model', type=str, default=DEFAULT_REASONING_MODEL,
+                       help='Model for optimizer reasoning/generation (LiteLLM format)')
+    parser.add_argument('--task-model', type=str, default=DEFAULT_TASK_MODEL,
+                       help='Model for evaluating prompts on dataset (LiteLLM format)')
     parser.add_argument('--optimizers', type=str, default='all',
                        help='Comma-separated: metaprompt,hierarchical,fewshot,gepa,evolutionary (default: all)')
     parser.add_argument('--output-dir', type=str, default='runs',
                        help='Base directory for outputs')
     parser.add_argument('--quiet', action='store_true',
                        help='Suppress verbose output')
-    parser.add_argument('--reasoning-effort', type=str, default=DEFAULT_REASONING_EFFORT,
-                       choices=['low', 'medium', 'high', 'xhigh'],
-                       help='Reasoning effort for Responses API')
-    parser.add_argument('--verbosity', type=str, default=DEFAULT_VERBOSITY,
-                       choices=['low', 'medium', 'high'],
-                       help='Output verbosity for Responses API')
-    parser.add_argument('--max-output-tokens', type=int, default=DEFAULT_MAX_OUTPUT_TOKENS,
-                       help='Max output tokens for Responses API')
     parser.add_argument('--split-ratio', type=str, default='40/40/20',
                        choices=['60/20/20', '50/25/25', '40/40/20', '30/50/20', '33/33/33'],
                        help='Train/Dev/Test split ratio (default: 40/40/20 recommended for small datasets)')
@@ -119,13 +111,14 @@ def parse_args():
 args = parse_args()
 
 # Build model parameters from CLI arguments
+# These parameters apply to both reasoning and task model calls
 model_params = {
-    "reasoning_effort": args.reasoning_effort,
-    "verbosity": args.verbosity,
     "num_retries": 5  # Retry on transient API errors (connection drops, rate limits)
 }
-if args.max_output_tokens > 0:
-    model_params["max_output_tokens"] = args.max_output_tokens
+
+# Convert hyphenated CLI args to underscore attributes
+reasoning_model = args.reasoning_model
+task_model = args.task_model
 
 # Validate configuration values
 if args.sample_size is not None and args.sample_size < 5:
@@ -145,19 +138,14 @@ if not args.quiet:
     print("=" * 80)
     print("CONFIGURATION")
     print("=" * 80)
-    print(f"Sample size: {args.sample_size if args.sample_size else 'Full dataset (~153 rows)'}")
+    print(f"Sample size: {args.sample_size if args.sample_size else 'Full dataset (~300 rows)'}")
     print(f"Optimization trials: {args.n_trials}")
     print(f"Parallel threads: {args.n_threads}")
-    print(f"Model: {args.model}")
+    print(f"Reasoning model: {reasoning_model} (for optimizer logic)")
+    print(f"Task model: {task_model} (for prompt evaluation)")
     print(f"Model parameters: {model_params}")
     print(f"Optimizers: {args.optimizers}")
     print("=" * 80)
-
-    if args.sample_size is None:
-        print("\n⚠️  WARNING: Using full dataset!")
-        print("   This will make ~4,500 API calls and may cost $20-50.")
-        print("   Consider using --sample-size 15 for initial testing.")
-        print("=" * 80)
 
 # Verify API keys are present
 if not os.getenv("OPIK_API_KEY"):
@@ -168,23 +156,31 @@ if not os.getenv("OPIK_API_KEY"):
     print("3. Get a key at: https://www.comet.com/signup")
     sys.exit(1)
 
-# Check for appropriate API key based on model provider
-if args.model.startswith("openai/"):
-    if not os.getenv("OPENAI_API_KEY"):
-        print("❌ ERROR: OPENAI_API_KEY not found")
-        print("\nHow to fix:")
-        print("1. Add to .env file: OPENAI_API_KEY=your_key_here")
-        print("2. Get a key at: https://platform.openai.com/api-keys")
-        sys.exit(1)
-elif args.model.startswith("gemini/"):
-    if not os.getenv("GEMINI_API_KEY"):
-        print("❌ ERROR: GEMINI_API_KEY not found")
-        print("\nHow to fix:")
-        print("1. Add to .env file: GEMINI_API_KEY=your_key_here")
-        print("2. Get a key at: https://aistudio.google.com/app/apikey")
-        sys.exit(1)
-else:
-    print(f"⚠️  Warning: Unknown model provider '{args.model.split('/')[0]}' - make sure appropriate API key is set")
+
+def check_model_api_key(model_name: str, model_purpose: str) -> None:
+    """Check that the appropriate API key is set for a model."""
+    if model_name.startswith("openai/"):
+        if not os.getenv("OPENAI_API_KEY"):
+            print(f"❌ ERROR: OPENAI_API_KEY not found (required for {model_purpose}: {model_name})")
+            print("\nHow to fix:")
+            print("1. Add to .env file: OPENAI_API_KEY=your_key_here")
+            print("2. Get a key at: https://platform.openai.com/api-keys")
+            sys.exit(1)
+    elif model_name.startswith("gemini/"):
+        if not os.getenv("GEMINI_API_KEY"):
+            print(f"❌ ERROR: GEMINI_API_KEY not found (required for {model_purpose}: {model_name})")
+            print("\nHow to fix:")
+            print("1. Add to .env file: GEMINI_API_KEY=your_key_here")
+            print("2. Get a key at: https://aistudio.google.com/app/apikey")
+            sys.exit(1)
+    else:
+        provider = model_name.split('/')[0] if '/' in model_name else model_name
+        print(f"⚠️  Warning: Unknown provider '{provider}' for {model_purpose} - ensure API key is set")
+
+
+# Check API keys for both models
+check_model_api_key(reasoning_model, "reasoning model")
+check_model_api_key(task_model, "task model")
 
 if not args.quiet:
     print("\n✅ API keys loaded successfully")
@@ -218,7 +214,7 @@ if not args.quiet:
 """
 ## Load the Dataset
 
-We use **stratified splitting** to maintain score distribution across ALL splits.
+We use **stratified splitting** to maintain emotion distribution across ALL splits.
 
 **Three-way split (train/dev/test):**
 - Train (40%): Used for failure analysis and understanding patterns
@@ -230,19 +226,19 @@ Why this matters:
 - With dev set: Optimizer can't overfit - must generalize to unseen dev data
 - Test set: Measures true performance on completely unseen data
 
-Example: ~153 samples → 61 train, 61 dev, 31 test
+Example: ~300 samples → 120 train, 120 dev, 60 test
 
 **Why stratification matters:**
-- Maintains score distribution across all three sets
-- Prevents train having all 5s while test has all 1s
+- Maintains emotion distribution across all three sets
+- Prevents train having all joy while test has all anger
 - Ensures reliable, comparable evaluation
 """
 
 # %% Load and split dataset
 train_df, dev_df, test_df = load_csv_with_stratified_split(
-    csv_path="answer-evaluation.csv",
+    csv_path="sampled_emotions.csv",
     sample_size=args.sample_size,
-    stratify_column="score",
+    stratify_column="emotion",
     random_state=42,
     split_type="train_dev_test",              # Three-way split for proper optimization
     train_dev_test_ratio=args.split_ratio     # Use command-line specified ratio
@@ -261,8 +257,8 @@ We create THREE separate datasets:
 
 # %% Create Opik datasets
 # Initialize Opik client with a project name
-opik_client = Opik(project_name="grading-rubric-optimization")
-print("✅ Connected to Opik project: grading-rubric-optimization")
+opik_client = Opik(project_name="emotion-classification")
+print("✅ Connected to Opik project: emotion-classification")
 
 
 def create_opik_dataset(name: str, df: pd.DataFrame):
@@ -270,7 +266,7 @@ def create_opik_dataset(name: str, df: pd.DataFrame):
     Create an Opik dataset from a pandas DataFrame.
 
     This maps our CSV columns to Opik dataset fields.
-    The 'score' column becomes 'expected_output' for our metric to use.
+    The 'emotion' column becomes 'expected_output' for our metric to use.
 
     ⚠️ IMPORTANT: This deletes any existing dataset with the same name to prevent
     data duplication across multiple runs. Each run should have fresh datasets.
@@ -291,7 +287,7 @@ def create_opik_dataset(name: str, df: pd.DataFrame):
     # Create fresh dataset
     dataset = opik_client.get_or_create_dataset(
         name=name,
-        description=f"Grading evaluation dataset - {name}"
+        description=f"Emotion classification dataset - {name}"
     )
 
     # Insert data with column mapping
@@ -299,11 +295,8 @@ def create_opik_dataset(name: str, df: pd.DataFrame):
     dataset.insert_from_pandas(
         dataframe=df,
         keys_mapping={
-            "question": "question",           # Maps to {question} in template
-            "human_answer": "human_answer",   # Maps to {human_answer} in template
-            "ai_answer": "ai_answer",         # Maps to {ai_answer} in template
-            "retrieved_content": "retrieved_content",  # Maps to {retrieved_content}
-            "score": "expected_output"        # Used by our metric for comparison
+            "text": "text",                   # Maps to {text} in template
+            "emotion": "expected_output"      # Used by our metric for comparison
         }
     )
 
@@ -312,9 +305,9 @@ def create_opik_dataset(name: str, df: pd.DataFrame):
 
 
 # Create all three datasets
-train_dataset = create_opik_dataset("grading-train-dataset", train_df)
-dev_dataset = create_opik_dataset("grading-dev-dataset", dev_df)
-test_dataset = create_opik_dataset("grading-test-dataset", test_df)
+train_dataset = create_opik_dataset("emotion-train-dataset", train_df)
+dev_dataset = create_opik_dataset("emotion-dev-dataset", dev_df)
+test_dataset = create_opik_dataset("emotion-test-dataset", test_df)
 
 # Allow Opik server to sync (eventual consistency)
 # This prevents dataset_item_id mismatches in GEPA optimizer
@@ -335,28 +328,26 @@ else:
 """
 ## Load the Prompt Templates
 
-Our grading rubric is split into TWO files for optimizer compatibility:
-- **grading-rubric-prompt-system.txt**: The grading rubric (system message)
-- **grading-rubric-prompt-user.txt**: Template variables only (user message)
+Our prompt is split into TWO files for optimizer compatibility:
+- **emotion-prompt-system.txt**: The classification instruction (system message)
+- **emotion-prompt-user.txt**: Template variable for text (user message)
 
 **Why this split?**
 MetaPrompt optimizer only modifies system messages by default. By putting the
-grading rubric in the system message, the optimizer can actually improve it.
-The user message with template variables is preserved during optimization.
+classification instruction in the system message, the optimizer can improve it.
+The user message with the template variable is preserved during optimization.
 
 **How Opik fills the template:**
 Opik automatically maps dataset fields to template variables by name:
-- dataset_item["question"] → {question}
-- dataset_item["ai_answer"] → {ai_answer}
-- And so on...
+- dataset_item["text"] → {text}
 """
 
 # %% Load prompt templates (system + user for optimizer compatibility)
 # MetaPrompt optimizer only modifies system messages by default, so we split:
-# - System message: Contains the grading rubric (will be optimized)
-# - User message: Contains only template variables (preserved during optimization)
-system_template = load_text_template("grading-rubric-prompt-system.txt")
-user_template = load_text_template("grading-rubric-prompt-user.txt")
+# - System message: Contains the classification instruction (will be optimized)
+# - User message: Contains only template variable (preserved during optimization)
+system_template = load_text_template("emotion-prompt-system.txt")
+user_template = load_text_template("emotion-prompt-user.txt")
 
 print("\n📄 System template preview (first 300 chars):")
 print("-" * 80)
@@ -371,21 +362,14 @@ print("-" * 80)
 """
 ## Create the Custom Metric
 
-Our metric compares LLM-generated scores (1-5) to human scores.
+Our metric compares LLM-predicted emotions to expected emotions.
 
 **How it works:**
-1. The LLM evaluates an answer using our prompt
-2. The LLM's response contains "**Score:** X"
-3. We extract that score
-4. We compare it to the human score from the dataset
-5. We return an accuracy value (0.0 to 1.0)
-
-**Accuracy formula:**
-- Perfect match (LLM=4, Human=4) → 1.0
-- Off by 0.2 (LLM=4, Human=4.2) → 0.96
-- Off by 1 (LLM=4, Human=5) → 0.8
-- Off by 2 (LLM=3, Human=5) → 0.6
-- Failed to extract score → 0.0
+1. The LLM classifies text using our prompt
+2. The LLM's response contains the emotion (e.g., "joy")
+3. We extract that emotion
+4. We compare it to the expected emotion from the dataset
+5. We return 1.0 for correct, 0.0 for incorrect
 
 **Important:** This metric does NOT call the LLM - it just evaluates the LLM's output!
 """
@@ -393,24 +377,24 @@ Our metric compares LLM-generated scores (1-5) to human scores.
 # %% Define custom metric class
 
 
-class ScoreAccuracyMetric(BaseMetric):
+class EmotionAccuracyMetric(BaseMetric):
     """
-    Custom metric that measures score prediction accuracy.
+    Custom metric that measures emotion classification accuracy.
 
     Key insight: This metric does NOT call the LLM itself.
     It evaluates the LLM's output that was already generated.
 
     Flow:
     1. Optimizer generates LLM response using the prompt
-    2. LLM response contains "**Score:** 4.5"
-    3. This metric extracts that score
-    4. Compares to expected human score
-    5. Returns accuracy (0.0 to 1.0)
+    2. LLM response contains "joy" (or other emotion)
+    3. This metric extracts that emotion
+    4. Compares to expected emotion
+    5. Returns 1.0 if correct, 0.0 if incorrect
 
     Inherits from Opik's BaseMetric to integrate with the optimizer.
     """
 
-    def __init__(self, name: str = "score_accuracy"):
+    def __init__(self, name: str = "emotion_accuracy"):
         """Initialize the metric with a name."""
         super().__init__(name=name)
 
@@ -421,59 +405,41 @@ class ScoreAccuracyMetric(BaseMetric):
         **ignored_kwargs: Any
     ) -> score_result.ScoreResult:
         """
-        Score the LLM output by comparing extracted score to expected score.
+        Score the LLM output by comparing extracted emotion to expected emotion.
 
         Args:
-            output: The LLM's full response (contains the score)
-            expected_output: The expected score from the dataset
+            output: The LLM's full response (contains the emotion)
+            expected_output: The expected emotion from the dataset
             **ignored_kwargs: Other dataset fields (we don't need them)
 
         Returns:
-            ScoreResult with accuracy value between 0.0 and 1.0
+            ScoreResult with value 1.0 (correct) or 0.0 (incorrect)
         """
-        # Extract the score from LLM output
-        llm_score = extract_score_from_text(output, min_score=1.0, max_score=5.0)
+        # Extract the emotion from LLM output
+        predicted_emotion = extract_emotion_from_text(output)
+        expected_emotion = expected_output.strip().lower()
 
-        if llm_score is None:
-            # Failed to extract score - return 0
+        if predicted_emotion is None:
+            # Failed to extract emotion - return 0
             return score_result.ScoreResult(
                 value=0.0,
                 name=self.name,
-                reason="Could not extract score from LLM response"
+                reason=f"Could not extract emotion from: {output[:50]}..."
             )
 
-        # Parse expected score
-        try:
-            human_score = float(expected_output)
-            if not (1.0 <= human_score <= 5.0):
-                return score_result.ScoreResult(
-                    value=0.0,
-                    name=self.name,
-                    reason=f"Invalid expected score: {expected_output}"
-                )
-        except (ValueError, TypeError):
-            return score_result.ScoreResult(
-                value=0.0,
-                name=self.name,
-                reason=f"Could not parse expected score: {expected_output}"
-            )
-
-        # Calculate accuracy: 1 - (difference / 4)
-        # This gives us a value between 0.0 and 1.0
-        # Max difference is 4 (1.0 to 5.0), so we normalize by 4
-        difference = abs(llm_score - human_score)
-        accuracy = max(0.0, 1.0 - (difference / 4.0))
+        # Compare emotions (case-insensitive)
+        is_correct = (predicted_emotion == expected_emotion)
 
         return score_result.ScoreResult(
-            value=accuracy,
+            value=1.0 if is_correct else 0.0,
             name=self.name,
-            reason=f"LLM score: {llm_score}, Human score: {human_score}, Diff: {difference:.2f}"
+            reason=f"Predicted: {predicted_emotion}, Expected: {expected_emotion}"
         )
 
 
 # Create metric instance
-metric = ScoreAccuracyMetric(name="score_accuracy")
-print("✅ Created custom metric: score_accuracy")
+metric = EmotionAccuracyMetric(name="emotion_accuracy")
+print("✅ Created custom metric: emotion_accuracy")
 
 # %% [markdown]
 """
@@ -483,15 +449,12 @@ Let's test our metric with an example to make sure it works!
 """
 
 # %% Test metric
-test_output = """**Analysis:** The AI answer is well-grounded in the retrieved content.
-**Score:** 4.5
-**Justification:** The answer accurately reflects the information."""
-
-test_expected = "4.5"
+test_output = "joy"
+test_expected = "joy"
 
 test_result = metric.score(output=test_output, expected_output=test_expected)
 print("\n🧪 Metric test:")
-print("   Input: LLM score=4.5, Expected score=4.5")
+print("   Input: LLM output='joy', Expected='joy'")
 print(f"   Result: {test_result.value:.2f} (should be 1.00)")
 print(f"   Reason: {test_result.reason}")
 
@@ -513,7 +476,7 @@ that takes `dataset_item` and `llm_output` as parameters.
 # %% Define metric function
 
 
-def score_accuracy_metric_func(dataset_item: dict, llm_output: str) -> score_result.ScoreResult:
+def emotion_accuracy_metric_func(dataset_item: dict, llm_output: str) -> score_result.ScoreResult:
     """
     Metric function for optimizer.
 
@@ -540,28 +503,28 @@ print("✅ Metric function ready")
 
 The ChatPrompt wraps our templates in the format Opik expects.
 We use a two-message structure:
-- **System message**: Contains the grading rubric (will be optimized by MetaPrompt)
-- **User message**: Contains template variables (preserved during optimization)
+- **System message**: Contains the classification instruction (will be optimized by MetaPrompt)
+- **User message**: Contains template variable (preserved during optimization)
 
 **Note:** We only specify the template here, NOT the model!
 The model configuration goes in the optimizer.
 """
 
 # %% Create initial ChatPrompt
-# Using system + user message structure so MetaPrompt can optimize the rubric
+# Using system + user message structure so MetaPrompt can optimize the instruction
 initial_prompt = ChatPrompt(
     messages=[
         {
             "role": "system",
-            "content": system_template  # The grading rubric (will be optimized)
+            "content": system_template  # The classification instruction (will be optimized)
         },
         {
             "role": "user",
-            "content": user_template    # Template variables only (preserved)
+            "content": user_template    # Template variable only (preserved)
         }
     ],
-    model=args.model,               # Use user's model for prompt evaluation
-    model_parameters=model_params   # Pass Responses API parameters to prompt
+    model=task_model,               # Task model evaluates prompts on dataset
+    model_parameters=model_params   # Pass model parameters to prompt
 )
 
 print("✅ Created initial ChatPrompt (system + user messages)")
@@ -609,6 +572,8 @@ print("⏳ Evaluating on train and dev sets...\n")
 
 # We'll use MetaPromptOptimizer for baseline evaluation
 baseline_optimizer = MetaPromptOptimizer(
+    model=reasoning_model,          # Reasoning model for optimizer logic
+    model_parameters=model_params,
     prompts_per_round=3,
     enable_context=True,
     num_task_examples=3,
@@ -623,7 +588,7 @@ start_time = time.time()
 baseline_train_score = baseline_optimizer.evaluate_prompt(
     prompt=initial_prompt,
     dataset=train_dataset,
-    metric=score_accuracy_metric_func,
+    metric=emotion_accuracy_metric_func,
     n_samples=len(train_df),
     n_threads=args.n_threads
 )
@@ -632,7 +597,7 @@ baseline_train_score = baseline_optimizer.evaluate_prompt(
 baseline_dev_score = baseline_optimizer.evaluate_prompt(
     prompt=initial_prompt,
     dataset=dev_dataset,
-    metric=score_accuracy_metric_func,
+    metric=emotion_accuracy_metric_func,
     n_samples=len(dev_df),
     n_threads=args.n_threads
 )
@@ -707,6 +672,8 @@ if 'metaprompt' in enabled_optimizers:
     print("⏳ This may take several minutes...\n")
 
     metaprompt_optimizer = MetaPromptOptimizer(
+        model=reasoning_model,          # Reasoning model for optimizer logic
+        model_parameters=model_params,
         prompts_per_round=3,
         enable_context=True,
         num_task_examples=3,
@@ -721,7 +688,7 @@ if 'metaprompt' in enabled_optimizers:
         prompt=initial_prompt,
         dataset=train_dataset,              # For failure analysis
         validation_dataset=dev_dataset,     # For scoring candidates ⭐
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(train_df),
         n_trials=args.n_trials
     )
@@ -783,6 +750,8 @@ if 'hierarchical' in enabled_optimizers:
     print("⏳ This may take several minutes...\n")
 
     hierarchical_optimizer = HierarchicalReflectiveOptimizer(
+        model=reasoning_model,          # Reasoning model for optimizer logic
+        model_parameters=model_params,
         max_parallel_batches=3,
         batch_size=20,
         convergence_threshold=0.01,
@@ -797,7 +766,7 @@ if 'hierarchical' in enabled_optimizers:
         prompt=initial_prompt,
         dataset=train_dataset,              # For failure analysis
         validation_dataset=dev_dataset,     # For scoring candidates ⭐
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(train_df),
         n_trials=args.n_trials
     )
@@ -856,6 +825,8 @@ if 'fewshot' in enabled_optimizers:
     print("⏳ This may take several minutes...\n")
 
     fewshot_optimizer = FewShotBayesianOptimizer(
+        model=reasoning_model,          # Reasoning model for optimizer logic
+        model_parameters=model_params,
         min_examples=2,
         max_examples=8,
         n_threads=args.n_threads,
@@ -869,7 +840,7 @@ if 'fewshot' in enabled_optimizers:
         prompt=initial_prompt,
         dataset=train_dataset,              # For failure analysis
         validation_dataset=dev_dataset,     # For scoring candidates ⭐
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(train_df),
         max_trials=args.n_trials
     )
@@ -928,7 +899,8 @@ if 'gepa' in enabled_optimizers:
     print("⏳ This may take several minutes...\n")
 
     gepa_optimizer = GepaOptimizer(
-        model=args.model,
+        model=reasoning_model,          # Reasoning model for optimizer logic
+        model_parameters=model_params,
         n_threads=args.n_threads,
         verbose=1 if not args.quiet else 0,
         seed=42
@@ -936,18 +908,11 @@ if 'gepa' in enabled_optimizers:
 
     start_time = time.time()
 
-    # WORKAROUND: opik-optimizer GEPA adapter bug (as of v2.3.7)
-    # The adapter only receives train_dataset but GEPA uses both train and val.
-    # When GEPA evaluates val items, their IDs don't exist in train_dataset,
-    # causing "Dropping N dataset_item_ids not present in dataset" warnings
-    # and 0.0 scores. Using train_dataset for both works around this.
-    # Bug: adapter.py:375 should also receive validation_dataset
-    # TODO: Remove workaround when opik-optimizer fixes this bug
     gepa_result = gepa_optimizer.optimize_prompt(
         prompt=initial_prompt,
         dataset=train_dataset,              # For failure analysis
-        validation_dataset=train_dataset,   # WORKAROUND: use train (not dev) to avoid ID mismatch bug
-        metric=score_accuracy_metric_func,
+        validation_dataset=dev_dataset,     # For scoring candidates
+        metric=emotion_accuracy_metric_func,
         n_samples=len(train_df),
         max_trials=args.n_trials
     )
@@ -1005,15 +970,9 @@ if 'evolutionary' in enabled_optimizers:
     print("=" * 80)
     print("⏳ This may take several minutes...\n")
 
-    # WORKAROUND: Evolutionary optimizer generates empty messages during mutation/crossover
-    # which causes failures with the Responses API. Use standard Chat Completions API instead.
-    # See: https://github.com/comet-ml/opik/issues/XXXX
-    evolutionary_model = args.model.replace("/responses", "")
-    evolutionary_model_params = {k: v for k, v in model_params.items() if k != "max_output_tokens"}
-
     evolutionary_optimizer = EvolutionaryOptimizer(
-        model=evolutionary_model,
-        model_parameters=evolutionary_model_params,
+        model=reasoning_model,          # Reasoning model for optimizer logic
+        model_parameters=model_params,
         n_threads=args.n_threads,
         verbose=1 if not args.quiet else 0,
         seed=42
@@ -1025,7 +984,7 @@ if 'evolutionary' in enabled_optimizers:
         prompt=initial_prompt,
         dataset=train_dataset,              # For failure analysis
         validation_dataset=dev_dataset,     # For scoring candidates ⭐
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(train_df),
         max_trials=args.n_trials
     )
@@ -1084,7 +1043,7 @@ print("Evaluating baseline on test set...")
 baseline_test_score = baseline_optimizer.evaluate_prompt(
     prompt=initial_prompt,
     dataset=test_dataset,  # ⚠️ Use test set!
-    metric=score_accuracy_metric_func,
+    metric=emotion_accuracy_metric_func,
     n_samples=len(test_df),
     n_threads=args.n_threads
 )
@@ -1101,13 +1060,13 @@ if metaprompt_result is not None:
     print("\nEvaluating MetaPrompt on test set...")
     metaprompt_test_prompt = ChatPrompt(
         messages=metaprompt_result.prompt,
-        model=args.model,
+        model=task_model,
         model_parameters=model_params
     )
     metaprompt_test_score = baseline_optimizer.evaluate_prompt(
         prompt=metaprompt_test_prompt,
         dataset=test_dataset,
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(test_df),
         n_threads=args.n_threads
     )
@@ -1117,13 +1076,13 @@ if hierarchical_result is not None:
     print("\nEvaluating Hierarchical on test set...")
     hierarchical_test_prompt = ChatPrompt(
         messages=hierarchical_result.prompt,
-        model=args.model,
+        model=task_model,
         model_parameters=model_params
     )
     hierarchical_test_score = baseline_optimizer.evaluate_prompt(
         prompt=hierarchical_test_prompt,
         dataset=test_dataset,
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(test_df),
         n_threads=args.n_threads
     )
@@ -1133,13 +1092,13 @@ if fewshot_result is not None:
     print("\nEvaluating FewShot on test set...")
     fewshot_test_prompt = ChatPrompt(
         messages=fewshot_result.prompt,
-        model=args.model,
+        model=task_model,
         model_parameters=model_params
     )
     fewshot_test_score = baseline_optimizer.evaluate_prompt(
         prompt=fewshot_test_prompt,
         dataset=test_dataset,
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(test_df),
         n_threads=args.n_threads
     )
@@ -1149,13 +1108,13 @@ if gepa_result is not None:
     print("\nEvaluating GEPA on test set...")
     gepa_test_prompt = ChatPrompt(
         messages=gepa_result.prompt,
-        model=args.model,
+        model=task_model,
         model_parameters=model_params
     )
     gepa_test_score = baseline_optimizer.evaluate_prompt(
         prompt=gepa_test_prompt,
         dataset=test_dataset,
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(test_df),
         n_threads=args.n_threads
     )
@@ -1165,13 +1124,13 @@ if evolutionary_result is not None:
     print("\nEvaluating Evolutionary on test set...")
     evolutionary_test_prompt = ChatPrompt(
         messages=evolutionary_result.prompt,
-        model=args.model,
+        model=task_model,
         model_parameters=model_params
     )
     evolutionary_test_score = baseline_optimizer.evaluate_prompt(
         prompt=evolutionary_test_prompt,
         dataset=test_dataset,
-        metric=score_accuracy_metric_func,
+        metric=emotion_accuracy_metric_func,
         n_samples=len(test_df),
         n_threads=args.n_threads
     )
@@ -1313,7 +1272,8 @@ summary = {
         "sample_size": args.sample_size,
         "n_trials": args.n_trials,
         "n_threads": args.n_threads,
-        "model": args.model,
+        "reasoning_model": reasoning_model,
+        "task_model": task_model,
         "model_parameters": model_params,
         "timestamp": os.path.basename(RUN_DIR),
         "enabled_optimizers": list(enabled_optimizers)

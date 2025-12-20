@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a prompt optimization workshop that teaches how to optimize AI prompts using Opik's agent optimizer. The project evaluates chatbot-generated answers against human scores using three different optimization algorithms.
+This is a prompt optimization workshop that teaches how to optimize AI prompts using Opik's agent optimizer. The project classifies social media text into four emotions (joy, anger, sadness, surprise) using five different optimization algorithms.
 
 ## Commands
 
@@ -28,7 +28,7 @@ pytest test_utils.py -v
 # Unit tests with coverage
 pytest test_utils.py -v --cov=utils
 
-# End-to-end test (uses real APIs, ~5-10 min, ~$1-2)
+# End-to-end test (uses real APIs, ~5 min)
 pytest test_optimize_e2e.py -v -s
 
 # Skip expensive E2E tests
@@ -45,11 +45,11 @@ pip install -r requirements.txt
 ## Architecture
 
 ### Core Files
-- `optimize.py` - Main optimization script with CLI. Uses VS Code cell markers (`# %%`) for interactive execution. Configures three optimizers (MetaPrompt, Hierarchical Reflective, Few-Shot Bayesian), runs baseline evaluation, then optimization, and compares results.
-- `utils.py` - Reusable utility functions for score extraction, dataset loading with stratification, template loading, and output directory management.
+- `optimize.py` - Main optimization script with CLI. Uses VS Code cell markers (`# %%`) for interactive execution. Configures five optimizers (MetaPrompt, Hierarchical Reflective, Few-Shot Bayesian, GEPA, Evolutionary), runs baseline evaluation, then optimization, and compares results.
+- `utils.py` - Reusable utility functions for emotion extraction, dataset loading with stratification, template loading, and output directory management.
 
 ### Data Flow
-1. Load evaluation CSV with stratified train/dev/test split (40/40/20 by default)
+1. Load emotion classification CSV with stratified train/dev/test split (40/40/20 by default)
 2. Create Opik datasets from pandas DataFrames
 3. Run baseline evaluation on train and dev sets
 4. Run selected optimizers (each uses train for failure analysis, dev for scoring)
@@ -58,18 +58,18 @@ pip install -r requirements.txt
 
 ### Key Integration Points
 - **Opik**: Connects to Comet for experiment tracking. Uses `opik.configure()` and `Opik(project_name=...)`.
-- **LiteLLM**: Model specification format is `provider/endpoint/model` (e.g., `openai/responses/gpt-5-mini`).
-- **Custom Metric**: `ScoreAccuracyMetric` extracts scores from LLM output via regex patterns and compares to human scores using formula `1 - abs(diff) / 4.0`.
+- **LiteLLM**: Model specification format is `provider/model` (e.g., `openai/gpt-4o-mini`).
+- **Custom Metric**: `EmotionAccuracyMetric` extracts emotions from LLM output and compares to expected emotion (exact match: 1.0 if correct, 0.0 if wrong).
 
 ### Optimizer Pattern
-All three optimizers follow the same pattern:
+All five optimizers follow the same pattern:
 ```python
 optimizer = SomeOptimizer(params...)
 result = optimizer.optimize_prompt(
     prompt=initial_prompt,
     dataset=train_dataset,           # For failure analysis
     validation_dataset=dev_dataset,  # For scoring candidates
-    metric=score_accuracy_metric_func,
+    metric=emotion_accuracy_metric_func,
     n_samples=len(train_df),
     n_trials=N
 )
@@ -77,10 +77,13 @@ result = optimizer.optimize_prompt(
 
 ## Model Notes
 
-- GPT-5 models are reasoning models requiring OpenAI's Responses API
-- Use `openai/responses/gpt-5-mini` format in LiteLLM for reasoning models
-- This requires `fastapi` and `orjson` packages (don't use `litellm[proxy]` - it has version conflicts with opik)
-- Standard models (GPT-4o, etc.) use `openai/gpt-4o` format without the `responses` endpoint
+Two models are used during optimization:
+- **Reasoning model** (`--reasoning-model`): Used by the optimizer for generating candidates, mutations, analysis. Default: `openai/gpt-4o`
+- **Task model** (`--task-model`): Used to evaluate prompts on the dataset. Default: `openai/gpt-4o-mini`
+
+Model format is LiteLLM: `provider/model`
+- OpenAI: `openai/gpt-4o`, `openai/gpt-4o-mini`
+- Anthropic: `anthropic/claude-3-5-sonnet-20241022`
 
 ## Environment Variables
 
