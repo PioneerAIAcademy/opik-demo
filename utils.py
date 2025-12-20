@@ -66,6 +66,53 @@ def extract_score_from_text(text: str, min_score: float = 1.0, max_score: float 
     return None
 
 
+def extract_emotion_from_text(text: str) -> Optional[str]:
+    """
+    Extract emotion label from LLM response.
+
+    Returns lowercase emotion or None if not found.
+    Valid emotions: joy, anger, sadness, surprise
+
+    This function handles various output formats:
+    - Single word: "joy"
+    - With punctuation: "joy."
+    - In a sentence: "The emotion is joy"
+
+    Args:
+        text: The LLM response text to parse
+
+    Returns:
+        Lowercase emotion string or None if not found
+
+    Examples:
+        >>> extract_emotion_from_text("joy")
+        'joy'
+        >>> extract_emotion_from_text("The emotion is sadness.")
+        'sadness'
+        >>> extract_emotion_from_text("I think this is happy")
+        None
+
+    Reuse this in your projects:
+        emotion = extract_emotion_from_text(llm_response)
+        if emotion is not None:
+            print(f"Detected emotion: {emotion}")
+    """
+    valid_emotions = {'joy', 'anger', 'sadness', 'surprise'}
+    text_lower = text.strip().lower()
+
+    # Check if response is just the emotion word (possibly with punctuation)
+    text_clean = text_lower.rstrip('.,!?;:')
+    if text_clean in valid_emotions:
+        return text_clean
+
+    # Try to find emotion in longer text
+    for emotion in valid_emotions:
+        if emotion in text_lower:
+            return emotion
+
+    return None
+
+
 def load_csv_with_stratified_split(
     csv_path: str,
     sample_size: Optional[int] = None,
@@ -138,12 +185,17 @@ def load_csv_with_stratified_split(
     print(f"   Total rows available: {len(df)}")
     print(f"   Columns: {list(df.columns)}")
 
-    # Round scores to integers for stratification grouping
-    score_groups = df[stratify_column].round().astype(int)
-
-    # Show distribution of stratify column
-    print(f"\n   Distribution of '{stratify_column}' (rounded to integers):")
-    print(score_groups.value_counts().sort_index())
+    # Create stratification groups based on column type
+    # For numeric columns (scores), round to integers
+    # For categorical columns (emotions), use as-is
+    if pd.api.types.is_numeric_dtype(df[stratify_column]):
+        score_groups = df[stratify_column].round().astype(int)
+        print(f"\n   Distribution of '{stratify_column}' (rounded to integers):")
+        print(score_groups.value_counts().sort_index())
+    else:
+        score_groups = df[stratify_column]
+        print(f"\n   Distribution of '{stratify_column}':")
+        print(score_groups.value_counts())
 
     # Determine sample size
     if sample_size is None:
@@ -170,7 +222,10 @@ def load_csv_with_stratified_split(
         df_sample = df
 
     # Recalculate score groups for the sample
-    sample_score_groups = df_sample[stratify_column].round().astype(int)
+    if pd.api.types.is_numeric_dtype(df_sample[stratify_column]):
+        sample_score_groups = df_sample[stratify_column].round().astype(int)
+    else:
+        sample_score_groups = df_sample[stratify_column]
 
     # Perform split based on type
     if split_type == "train_dev_test":
@@ -203,7 +258,10 @@ def load_csv_with_stratified_split(
             )
 
             # Second split: dev vs test
-            dev_test_score_groups = dev_test_df[stratify_column].round().astype(int)
+            if pd.api.types.is_numeric_dtype(dev_test_df[stratify_column]):
+                dev_test_score_groups = dev_test_df[stratify_column].round().astype(int)
+            else:
+                dev_test_score_groups = dev_test_df[stratify_column]
             dev_df, test_df = train_test_split(
                 dev_test_df,
                 train_size=dev_size,
@@ -233,13 +291,23 @@ def load_csv_with_stratified_split(
         print(f"      Dev/Validation: {len(dev_df)} samples")
         print(f"      Test: {len(test_df)} samples")
 
-        # Show score distribution in each split
-        print("\n   Training score distribution:")
-        print(train_df[stratify_column].round().value_counts().sort_index())
-        print("\n   Dev score distribution:")
-        print(dev_df[stratify_column].round().value_counts().sort_index())
-        print("\n   Test score distribution:")
-        print(test_df[stratify_column].round().value_counts().sort_index())
+        # Show distribution in each split
+        is_numeric = pd.api.types.is_numeric_dtype(train_df[stratify_column])
+        print(f"\n   Training {stratify_column} distribution:")
+        if is_numeric:
+            print(train_df[stratify_column].round().value_counts().sort_index())
+        else:
+            print(train_df[stratify_column].value_counts())
+        print(f"\n   Dev {stratify_column} distribution:")
+        if is_numeric:
+            print(dev_df[stratify_column].round().value_counts().sort_index())
+        else:
+            print(dev_df[stratify_column].value_counts())
+        print(f"\n   Test {stratify_column} distribution:")
+        if is_numeric:
+            print(test_df[stratify_column].round().value_counts().sort_index())
+        else:
+            print(test_df[stratify_column].value_counts())
 
         return train_df, dev_df, test_df
 
@@ -276,11 +344,18 @@ def load_csv_with_stratified_split(
         print(f"      Training: {len(train_df)} samples")
         print(f"      Test: {len(test_df)} samples")
 
-        # Show score distribution in each split
-        print("\n   Training score distribution:")
-        print(train_df[stratify_column].round().value_counts().sort_index())
-        print("\n   Test score distribution:")
-        print(test_df[stratify_column].round().value_counts().sort_index())
+        # Show distribution in each split
+        is_numeric = pd.api.types.is_numeric_dtype(train_df[stratify_column])
+        print(f"\n   Training {stratify_column} distribution:")
+        if is_numeric:
+            print(train_df[stratify_column].round().value_counts().sort_index())
+        else:
+            print(train_df[stratify_column].value_counts())
+        print(f"\n   Test {stratify_column} distribution:")
+        if is_numeric:
+            print(test_df[stratify_column].round().value_counts().sort_index())
+        else:
+            print(test_df[stratify_column].value_counts())
 
         return train_df, test_df
 

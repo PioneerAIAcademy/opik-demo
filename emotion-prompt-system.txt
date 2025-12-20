@@ -1,0 +1,1 @@
+Classify the emotion of the following text. Output only one word: joy, anger, sadness, or surprise.

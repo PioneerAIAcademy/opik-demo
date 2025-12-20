@@ -45,13 +45,13 @@ class TestOptimizeE2E:
         - CLI argument parsing
         - Dataset loading and splitting
         - Baseline evaluation
-        - All three optimizers
+        - All five optimizers
         - Output file generation
         - Results comparison
         """
         print("\n" + "=" * 80)
         print("STARTING E2E TEST: Minimal run with all optimizers")
-        print("Expected duration: 15-30 minutes")
+        print("Expected duration: ~5 minutes")
         print("=" * 80)
 
         start_time = time.time()
